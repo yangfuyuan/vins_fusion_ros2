@@ -11,9 +11,9 @@
 #pragma once
 
 #include <ceres/ceres.h>
+#include <vins/common/sensor_data_type.h>
 #include <vins/estimator/feature_manager.h>
 #include <vins/estimator/parameters.h>
-#include <vins/estimator/sensor_data_type.h>
 #include <vins/factor/imu_factor.h>
 #include <vins/factor/marginalization_factor.h>
 #include <vins/factor/pose_local_parameterization.h>
@@ -41,16 +41,6 @@ using namespace std;
 
 class Estimator {
  public:
-  // 状态枚举
-  enum class SolverState { INITIAL, NON_LINEAR };
-  enum class MarginalizationType { MARGIN_OLD, MARGIN_SECOND_NEW };
-
-  using Timestamp = double;
-  using FeatureFrame =
-      std::map<int, std::vector<std::pair<int, Eigen::Matrix<double, 7, 1>>>>;
-  using TimestampedFeatureFrame = std::pair<Timestamp, FeatureFrame>;
-  using TimestampedVector3d = std::pair<Timestamp, Eigen::Vector3d>;
-
   Estimator();
   ~Estimator();
   //
@@ -78,12 +68,9 @@ class Estimator {
 
  private:
   // 内部处理函数
-  void processIMU(Timestamp timestamp, double deltaTime,
-                  const Eigen::Vector3d &acceleration,
-                  const Eigen::Vector3d &angularVelocity);
+  void processIMU(const IMUData &data, double deltaTime);
   void processImage(const FeatureFrame &features, Timestamp timestamp);
-  void fastPredictIMU(Timestamp timestamp, Eigen::Vector3d acceleration,
-                      Eigen::Vector3d angularVelocity);
+  void fastPredictIMU(const IMUData &data);
 
   // internal
   bool initialStructure();
@@ -97,9 +84,7 @@ class Estimator {
   void vector2double();
   void double2vector();
   bool failureDetection();
-  bool getIMUInterval(double t0, double t1,
-                      vector<TimestampedVector3d> &accVector,
-                      vector<TimestampedVector3d> &gyrVector);
+  bool getIMUInterval(double t0, double t1, vector<IMUData> &data);
   void predictPtsInNextFrame();
   void outliersRejection(set<int> &removeIndex);
   double reprojectionError(Matrix3d &Ri, Vector3d &Pi, Matrix3d &rici,
@@ -108,7 +93,7 @@ class Estimator {
                            Vector3d &uvi, Vector3d &uvj);
   void updateLatestStates();
   bool IMUAvailable(double t);
-  void initFirstIMUPose(vector<TimestampedVector3d> &accVector);
+  void initFirstIMUPose(const vector<IMUData> &data);
 
  private:
   void printStatistics(Timestamp timestamp);
@@ -130,8 +115,7 @@ class Estimator {
   std::mutex imu_mutex;
   std::condition_variable imuCondition;
   //
-  std::queue<TimestampedVector3d> accelerationBuffer;
-  std::queue<TimestampedVector3d> angularVelocityBuffer;
+  std::queue<IMUData> imuBuffer;
   queue<TimestampedFeatureFrame> featureBuffer;
 
   Timestamp previousTimestamp = -1;
@@ -158,11 +142,8 @@ class Estimator {
   Vector3d backPosition, lastPosition, lastPosition0;
 
   IntegrationBase::Ptr pre_integrations[(WINDOW_SIZE + 1)];
-  Vector3d previousAcceleration, previousAngularVelocity;
-
-  vector<Timestamp> deltaTimeBuffers[(WINDOW_SIZE + 1)];
-  vector<Vector3d> linear_acceleration_buf[(WINDOW_SIZE + 1)];
-  vector<Vector3d> angular_velocity_buf[(WINDOW_SIZE + 1)];
+  IMUData previousImuData;
+  std::vector<IMUData> deltaTimeImuBuffer[(WINDOW_SIZE + 1)];
 
   // 计数变量
   int inputImageCount = 0;
@@ -180,12 +161,12 @@ class Estimator {
 
   vector<Vector3d> point_cloud;
   vector<Vector3d> margin_cloud;
+
+  //
   SafeClass<PoseSequenceData> safe_key_poses;
   PoseSequenceData key_poses;
   ImageData track_image;
   SafeClass<ImageData> safe_track_image;
-
-  //
   SafeClass<OdomData> safe_imu_pre_odom;
   OdomData imu_odom;
   SafeClass<OdomData> safe_vio_odom;
@@ -213,10 +194,7 @@ class Estimator {
   Eigen::Vector3d latestVelocity;
   Eigen::Vector3d latestAccelBias;
   Eigen::Vector3d latestGyroBias;
-  Eigen::Vector3d latestAcceleration;
-  Eigen::Vector3d latestAngularVelocity;
-  Timestamp latestTimestamp;
-
+  IMUData latestImuData;
   bool isFirstPoseInitialized = false;
   std::atomic<bool> isRunning{false};
 };

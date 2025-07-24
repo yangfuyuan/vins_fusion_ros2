@@ -30,8 +30,7 @@ Estimator::~Estimator() {
 void Estimator::resetState() {
   {
     std::lock_guard<std::mutex> imu_lock(imu_mutex);
-    clearBuffer(accelerationBuffer);
-    clearBuffer(angularVelocityBuffer);
+    clearBuffer(imuBuffer);
   }
   {
     std::lock_guard<std::mutex> feature_lock(featureBufferMutex);
@@ -53,9 +52,7 @@ void Estimator::resetState() {
     velocities[i].setZero();
     accelerometerBiases[i].setZero();
     gyroscopeBiases[i].setZero();
-    clearBuffer(deltaTimeBuffers[i]);
-    clearBuffer(linear_acceleration_buf[i]);
-    clearBuffer(angular_velocity_buf[i]);
+    clearBuffer(deltaTimeImuBuffer[i]);
     pre_integrations[i] = nullptr;
   }
 
@@ -144,7 +141,7 @@ void Estimator::inputImage(const ImageData &image) {
     safe_track_image.set(track_image);
   }
 
-  if (inputImageCount % 2 == 0) {
+  if (inputImageCount % 2 == 0 || featureBuffer.empty()) {
     {
       std::lock_guard<std::mutex> lock(featureBufferMutex);
       featureBuffer.push(make_pair(image.timestamp, featureFrame));
@@ -156,14 +153,12 @@ void Estimator::inputImage(const ImageData &image) {
 void Estimator::inputIMU(const IMUData &imu) {
   {
     std::lock_guard<std::mutex> lock(imu_mutex);
-    accelerationBuffer.push(make_pair(imu.timestamp, imu.linear_acceleration));
-    angularVelocityBuffer.push(make_pair(imu.timestamp, imu.angular_velocity));
+    imuBuffer.push(imu);
   }
   imuCondition.notify_all();
 
   if (solver_flag == SolverState::NON_LINEAR) {
-    fastPredictIMU(imu.timestamp, imu.linear_acceleration,
-                   imu.angular_velocity);
+    fastPredictIMU(imu);
   }
 }
 
@@ -177,29 +172,25 @@ void Estimator::inputFeature(double timestamp,
 }
 
 bool Estimator::getIMUInterval(double startTime, double endTime,
-                               vector<TimestampedVector3d> &accVector,
-                               vector<TimestampedVector3d> &gyrVector) {
+                               vector<IMUData> &data) {
   std::lock_guard<std::mutex> lock(imu_mutex);
-  if (accelerationBuffer.empty()) {
+  if (imuBuffer.empty()) {
     VINS_ERROR << "No IMU data received";
     return false;
   }
 
-  if (endTime <= accelerationBuffer.back().first) {
-    while (accelerationBuffer.front().first <= startTime) {
-      accelerationBuffer.pop();
-      angularVelocityBuffer.pop();
+  if (endTime <= imuBuffer.back().timestamp) {
+    while (imuBuffer.front().timestamp <= startTime) {
+      imuBuffer.pop();
     }
 
-    while (accelerationBuffer.front().first < endTime) {
-      accVector.push_back(accelerationBuffer.front());
-      accelerationBuffer.pop();
-      gyrVector.push_back(angularVelocityBuffer.front());
-      angularVelocityBuffer.pop();
+    while (imuBuffer.front().timestamp < endTime) {
+      data.push_back(imuBuffer.front());
+      imuBuffer.pop();
     }
-
-    accVector.push_back(accelerationBuffer.front());
-    gyrVector.push_back(angularVelocityBuffer.front());
+    if (!imuBuffer.empty()) {
+      data.push_back(imuBuffer.front());
+    }
     return true;
   }
 
@@ -208,13 +199,13 @@ bool Estimator::getIMUInterval(double startTime, double endTime,
 }
 
 bool Estimator::IMUAvailable(double t) {
-  return !accelerationBuffer.empty() && t <= accelerationBuffer.back().first;
+  return !imuBuffer.empty() && t <= imuBuffer.back().timestamp;
 }
 
 void Estimator::processMeasurements() {
   while (isRunning.load()) {
     TimestampedFeatureFrame feature;
-    vector<TimestampedVector3d> accVector, gyrVector;
+    vector<IMUData> imu_datas;
     {
       std::unique_lock<std::mutex> lock(featureBufferMutex);
       featureCondition.wait(
@@ -237,18 +228,17 @@ void Estimator::processMeasurements() {
     }
 
     if (USE_IMU) {
-      getIMUInterval(previousTimestamp, currentTimestamp, accVector, gyrVector);
-      if (!isFirstPoseInitialized) initFirstIMUPose(accVector);
-      for (size_t i = 0; i < accVector.size(); i++) {
+      getIMUInterval(previousTimestamp, currentTimestamp, imu_datas);
+      if (!isFirstPoseInitialized) initFirstIMUPose(imu_datas);
+      for (size_t i = 0; i < imu_datas.size(); i++) {
         double dt;
         if (i == 0)
-          dt = accVector[i].first - previousTimestamp;
-        else if (i == accVector.size() - 1)
-          dt = currentTimestamp - accVector[i - 1].first;
+          dt = imu_datas[i].timestamp - previousTimestamp;
+        else if (i == imu_datas.size() - 1)
+          dt = currentTimestamp - imu_datas[i - 1].timestamp;
         else
-          dt = accVector[i].first - accVector[i - 1].first;
-        processIMU(accVector[i].first, dt, accVector[i].second,
-                   gyrVector[i].second);
+          dt = imu_datas[i].timestamp - imu_datas[i - 1].timestamp;
+        processIMU(imu_datas[i], dt);
       }
     }
     {
@@ -267,15 +257,15 @@ void Estimator::printStatistics(Timestamp timestamp) {
              << ")";
 }
 
-void Estimator::initFirstIMUPose(vector<TimestampedVector3d> &accVector) {
+void Estimator::initFirstIMUPose(const vector<IMUData> &data) {
   isFirstPoseInitialized = true;
   Vector3d averageAcceleration = Vector3d::Zero();
 
-  for (const auto &accel : accVector) {
-    averageAcceleration += accel.second;
+  for (const auto &imu : data) {
+    averageAcceleration += imu.linear_acceleration;
   }
 
-  averageAcceleration /= accVector.size();
+  averageAcceleration /= data.size();
   VINS_INFO << "Average acceleration: " << averageAcceleration.transpose();
 
   Matrix3d initialRotation = Utility::g2R(averageAcceleration);
@@ -293,45 +283,42 @@ void Estimator::setFirstPose(const Eigen::Vector3d &position,
   initialRotation = rotation;
 }
 
-void Estimator::processIMU(Timestamp timestamp, double deltaTime,
-                           const Eigen::Vector3d &acceleration,
-                           const Eigen::Vector3d &angularVelocity) {
+void Estimator::processIMU(const IMUData &data, double deltaTime) {
   if (!isFirstIMUReceived) {
     isFirstIMUReceived = true;
-    previousAcceleration = acceleration;
-    previousAngularVelocity = angularVelocity;
+    previousImuData = data;
   }
 
   if (!pre_integrations[frameCount]) {
     pre_integrations[frameCount] = std::make_shared<IntegrationBase>(
-        previousAcceleration, previousAngularVelocity,
-        accelerometerBiases[frameCount], gyroscopeBiases[frameCount]);
+        previousImuData, accelerometerBiases[frameCount],
+        gyroscopeBiases[frameCount]);
   }
   if (frameCount != 0) {
-    pre_integrations[frameCount]->push_back(deltaTime, acceleration,
-                                            angularVelocity);
-    tmp_pre_integration->push_back(deltaTime, acceleration, angularVelocity);
+    IMUData delta_imu = data;
+    delta_imu.timestamp = deltaTime;
 
-    deltaTimeBuffers[frameCount].push_back(deltaTime);
-    linear_acceleration_buf[frameCount].push_back(acceleration);
-    angular_velocity_buf[frameCount].push_back(angularVelocity);
+    pre_integrations[frameCount]->push_back(delta_imu);
+    tmp_pre_integration->push_back(delta_imu);
+    deltaTimeImuBuffer[frameCount].push_back(delta_imu);
 
     int j = frameCount;
-    Vector3d un_acc_0 =
-        rotations[j] * (previousAcceleration - accelerometerBiases[j]) -
-        gravity;
+    Vector3d un_acc_0 = rotations[j] * (previousImuData.linear_acceleration -
+                                        accelerometerBiases[j]) -
+                        gravity;
     Vector3d un_gyr =
-        0.5 * (previousAngularVelocity + angularVelocity) - gyroscopeBiases[j];
+        0.5 * (previousImuData.angular_velocity + data.angular_velocity) -
+        gyroscopeBiases[j];
     rotations[j] *= Utility::deltaQ(un_gyr * deltaTime).toRotationMatrix();
     Vector3d un_acc_1 =
-        rotations[j] * (acceleration - accelerometerBiases[j]) - gravity;
+        rotations[j] * (data.linear_acceleration - accelerometerBiases[j]) -
+        gravity;
     Vector3d un_acc = 0.5 * (un_acc_0 + un_acc_1);
     positions[j] +=
         deltaTime * velocities[j] + 0.5 * deltaTime * deltaTime * un_acc;
     velocities[j] += deltaTime * un_acc;
   }
-  previousAcceleration = acceleration;
-  previousAngularVelocity = angularVelocity;
+  previousImuData = data;
 }
 
 void Estimator::processImage(const FeatureFrame &features,
@@ -348,8 +335,8 @@ void Estimator::processImage(const FeatureFrame &features,
   imageframe.pre_integration = std::move(tmp_pre_integration);
   all_image_frame.insert(make_pair(timestamp, imageframe));
   tmp_pre_integration = std::make_shared<IntegrationBase>(
-      previousAcceleration, previousAngularVelocity,
-      accelerometerBiases[frameCount], gyroscopeBiases[frameCount]);
+      previousImuData, accelerometerBiases[frameCount],
+      gyroscopeBiases[frameCount]);
 
   if (ESTIMATE_EXTRINSIC == 2) {
     if (frameCount != 0) {
@@ -1171,10 +1158,7 @@ void Estimator::slideWindow() {
         positions[i].swap(positions[i + 1]);
         if (USE_IMU) {
           std::swap(pre_integrations[i], pre_integrations[i + 1]);
-
-          deltaTimeBuffers[i].swap(deltaTimeBuffers[i + 1]);
-          linear_acceleration_buf[i].swap(linear_acceleration_buf[i + 1]);
-          angular_velocity_buf[i].swap(angular_velocity_buf[i + 1]);
+          deltaTimeImuBuffer[i].swap(deltaTimeImuBuffer[i + 1]);
 
           velocities[i].swap(velocities[i + 1]);
           accelerometerBiases[i].swap(accelerometerBiases[i + 1]);
@@ -1192,12 +1176,10 @@ void Estimator::slideWindow() {
 
         pre_integrations[WINDOW_SIZE] = nullptr;
         pre_integrations[WINDOW_SIZE] = std::make_shared<IntegrationBase>(
-            previousAcceleration, previousAngularVelocity,
-            accelerometerBiases[WINDOW_SIZE], gyroscopeBiases[WINDOW_SIZE]);
+            previousImuData, accelerometerBiases[WINDOW_SIZE],
+            gyroscopeBiases[WINDOW_SIZE]);
 
-        deltaTimeBuffers[WINDOW_SIZE].clear();
-        linear_acceleration_buf[WINDOW_SIZE].clear();
-        angular_velocity_buf[WINDOW_SIZE].clear();
+        deltaTimeImuBuffer[WINDOW_SIZE].clear();
       }
 
       if (true || solver_flag == SolverState::INITIAL) {
@@ -1214,19 +1196,11 @@ void Estimator::slideWindow() {
       rotations[frameCount - 1] = rotations[frameCount];
 
       if (USE_IMU) {
-        for (unsigned int i = 0; i < deltaTimeBuffers[frameCount].size(); i++) {
-          double tmp_dt = deltaTimeBuffers[frameCount][i];
-          Vector3d tmp_linear_acceleration =
-              linear_acceleration_buf[frameCount][i];
-          Vector3d tmp_angular_velocity = angular_velocity_buf[frameCount][i];
-
-          pre_integrations[frameCount - 1]->push_back(
-              tmp_dt, tmp_linear_acceleration, tmp_angular_velocity);
-
-          deltaTimeBuffers[frameCount - 1].push_back(tmp_dt);
-          linear_acceleration_buf[frameCount - 1].push_back(
-              tmp_linear_acceleration);
-          angular_velocity_buf[frameCount - 1].push_back(tmp_angular_velocity);
+        for (unsigned int i = 0; i < deltaTimeImuBuffer[frameCount].size();
+             i++) {
+          const auto &imu = deltaTimeImuBuffer[frameCount][i];
+          pre_integrations[frameCount - 1]->push_back(imu);
+          deltaTimeImuBuffer[frameCount - 1].push_back(imu);
         }
 
         velocities[frameCount - 1] = velocities[frameCount];
@@ -1235,12 +1209,10 @@ void Estimator::slideWindow() {
 
         pre_integrations[WINDOW_SIZE] = nullptr;
         pre_integrations[WINDOW_SIZE] = std::make_shared<IntegrationBase>(
-            previousAcceleration, previousAngularVelocity,
-            accelerometerBiases[WINDOW_SIZE], gyroscopeBiases[WINDOW_SIZE]);
+            previousImuData, accelerometerBiases[WINDOW_SIZE],
+            gyroscopeBiases[WINDOW_SIZE]);
 
-        deltaTimeBuffers[WINDOW_SIZE].clear();
-        linear_acceleration_buf[WINDOW_SIZE].clear();
-        angular_velocity_buf[WINDOW_SIZE].clear();
+        deltaTimeImuBuffer[WINDOW_SIZE].clear();
       }
       slideWindowNew();
     }
@@ -1411,25 +1383,25 @@ void Estimator::outliersRejection(set<int> &removeIndex) {
   }
 }
 
-void Estimator::fastPredictIMU(double t, Eigen::Vector3d linear_acceleration,
-                               Eigen::Vector3d angular_velocity) {
+void Estimator::fastPredictIMU(const IMUData &data) {
   std::lock_guard<std::mutex> lock(propagateMutex);
-  double dt = t - latestTimestamp;
-  latestTimestamp = t;
+  double dt = data.timestamp - latestImuData.timestamp;
   Eigen::Vector3d un_acc_0 =
-      latest_Q * (latestAcceleration - latestAccelBias) - gravity;
+      latest_Q * (latestImuData.linear_acceleration - latestAccelBias) -
+      gravity;
   Eigen::Vector3d un_gyr =
-      0.5 * (latestAngularVelocity + angular_velocity) - latestGyroBias;
+      0.5 * (latestImuData.angular_velocity + data.angular_velocity) -
+      latestGyroBias;
   latest_Q = latest_Q * Utility::deltaQ(un_gyr * dt);
   Eigen::Vector3d un_acc_1 =
-      latest_Q * (linear_acceleration - latestAccelBias) - gravity;
+      latest_Q * (data.linear_acceleration - latestAccelBias) - gravity;
   Eigen::Vector3d un_acc = 0.5 * (un_acc_0 + un_acc_1);
   latestPosition =
       latestPosition + dt * latestVelocity + 0.5 * dt * dt * un_acc;
   latestVelocity = latestVelocity + dt * un_acc;
-  latestAcceleration = linear_acceleration;
-  latestAngularVelocity = angular_velocity;
-  imu_odom.timestamp = t;
+
+  latestImuData = data;
+  imu_odom.timestamp = data.timestamp;
   imu_odom.position = lastPosition;
   imu_odom.velocity = latestVelocity;
   imu_odom.orientation = latest_Q;
@@ -1437,27 +1409,21 @@ void Estimator::fastPredictIMU(double t, Eigen::Vector3d linear_acceleration,
 }
 
 void Estimator::updateLatestStates() {
-  latestTimestamp = Headers[frameCount] + timeDelay;
   latestPosition = positions[frameCount];
   latest_Q = rotations[frameCount];
   latestVelocity = velocities[frameCount];
   latestAccelBias = accelerometerBiases[frameCount];
   latestGyroBias = gyroscopeBiases[frameCount];
-  latestAcceleration = previousAcceleration;
-  latestAngularVelocity = previousAngularVelocity;
-  queue<pair<double, Eigen::Vector3d>> tmp_accBuf;
-  queue<pair<double, Eigen::Vector3d>> tmp_gyrBuf;
+  latestImuData = previousImuData;
+  latestImuData.timestamp = Headers[frameCount] + timeDelay;
+
+  queue<IMUData> tmp_imu;
   {
     std::lock_guard<std::mutex> imu_lock(imu_mutex);
-    tmp_accBuf = accelerationBuffer;
-    tmp_gyrBuf = angularVelocityBuffer;
+    tmp_imu = imuBuffer;
   }
-  while (!tmp_accBuf.empty()) {
-    double t = tmp_accBuf.front().first;
-    Eigen::Vector3d acc = tmp_accBuf.front().second;
-    Eigen::Vector3d gyr = tmp_gyrBuf.front().second;
-    fastPredictIMU(t, acc, gyr);
-    tmp_accBuf.pop();
-    tmp_gyrBuf.pop();
+  while (!tmp_imu.empty()) {
+    fastPredictIMU(tmp_imu.front());
+    tmp_imu.pop();
   }
 }

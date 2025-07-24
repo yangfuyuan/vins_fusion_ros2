@@ -29,7 +29,7 @@ Eigen::Quaterniond fromMsg(const geometry_msgs::msg::Quaternion& msg);
 IMUData fromMsg(const sensor_msgs::msg::Imu& msg);
 
 cv::Mat fromMsg(const sensor_msgs::msg::Image& img_msg);
-Estimator::FeatureFrame fromMsg(const sensor_msgs::msg::PointCloud& msg);
+FeatureFrame fromMsg(const sensor_msgs::msg::PointCloud& msg);
 
 nav_msgs::msg::Odometry toMsg(const OdomData& msg);
 builtin_interfaces::msg::Time toMsg(double msg);

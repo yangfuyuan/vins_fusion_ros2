@@ -10,6 +10,7 @@
 
 #pragma once
 #include <ceres/ceres.h>
+#include <vins/common/sensor_data_type.h>
 #include <vins/estimator/parameters.h>
 #include <vins/utility/utility.h>
 using namespace Eigen;
@@ -18,13 +19,10 @@ class IntegrationBase : public std::enable_shared_from_this<IntegrationBase> {
  public:
   using Ptr = std::shared_ptr<IntegrationBase>;
   IntegrationBase() = delete;
-  IntegrationBase(const Eigen::Vector3d &_acc_0, const Eigen::Vector3d &_gyr_0,
-                  const Eigen::Vector3d &_linearized_ba,
+  IntegrationBase(const IMUData &last, const Eigen::Vector3d &_linearized_ba,
                   const Eigen::Vector3d &_linearized_bg)
-      : acc_0{_acc_0},
-        gyr_0{_gyr_0},
-        linearized_acc{_acc_0},
-        linearized_gyr{_gyr_0},
+      : last_imu(last),
+        linearized_imu(last_imu),
         linearized_ba{_linearized_ba},
         linearized_bg{_linearized_bg},
         jacobian{Eigen::Matrix<double, 15, 15>::Identity()},
@@ -44,19 +42,15 @@ class IntegrationBase : public std::enable_shared_from_this<IntegrationBase> {
     noise.block<3, 3>(15, 15) = (GYR_W * GYR_W) * Eigen::Matrix3d::Identity();
   }
 
-  void push_back(double dt, const Eigen::Vector3d &acc,
-                 const Eigen::Vector3d &gyr) {
-    dt_buf.push_back(dt);
-    acc_buf.push_back(acc);
-    gyr_buf.push_back(gyr);
-    propagate(dt, acc, gyr);
+  void push_back(const IMUData &data) {
+    imu_buffer.push_back(data);
+    propagate(data);
   }
 
   void repropagate(const Eigen::Vector3d &_linearized_ba,
                    const Eigen::Vector3d &_linearized_bg) {
     sum_dt = 0.0;
-    acc_0 = linearized_acc;
-    gyr_0 = linearized_gyr;
+    last_imu = linearized_imu;
     delta_p.setZero();
     delta_q.setIdentity();
     delta_v.setZero();
@@ -64,36 +58,40 @@ class IntegrationBase : public std::enable_shared_from_this<IntegrationBase> {
     linearized_bg = _linearized_bg;
     jacobian.setIdentity();
     covariance.setZero();
-    for (int i = 0; i < static_cast<int>(dt_buf.size()); i++)
-      propagate(dt_buf[i], acc_buf[i], gyr_buf[i]);
+    for (int i = 0; i < static_cast<int>(imu_buffer.size()); i++)
+      propagate(imu_buffer[i]);
   }
 
   void midPointIntegration(
-      double _dt, const Eigen::Vector3d &_acc_0, const Eigen::Vector3d &_gyr_0,
-      const Eigen::Vector3d &_acc_1, const Eigen::Vector3d &_gyr_1,
+      const IMUData &last, const IMUData &current,
       const Eigen::Vector3d &delta_p, const Eigen::Quaterniond &delta_q,
       const Eigen::Vector3d &delta_v, const Eigen::Vector3d &linearized_ba,
       const Eigen::Vector3d &linearized_bg, Eigen::Vector3d &result_delta_p,
       Eigen::Quaterniond &result_delta_q, Eigen::Vector3d &result_delta_v,
       Eigen::Vector3d &result_linearized_ba,
       Eigen::Vector3d &result_linearized_bg, bool update_jacobian) {
-    // ROS_INFO("midpoint integration");
-    Vector3d un_acc_0 = delta_q * (_acc_0 - linearized_ba);
-    Vector3d un_gyr = 0.5 * (_gyr_0 + _gyr_1) - linearized_bg;
+    double _dt = current.timestamp;
+    double dt_sq = current.timestamp * current.timestamp;
+
+    Vector3d un_acc_0 = delta_q * (last.linear_acceleration - linearized_ba);
+    Vector3d un_gyr = 0.5 * (last.angular_velocity + current.angular_velocity) -
+                      linearized_bg;
     result_delta_q =
         delta_q * Quaterniond(1, un_gyr(0) * _dt / 2, un_gyr(1) * _dt / 2,
                               un_gyr(2) * _dt / 2);
-    Vector3d un_acc_1 = result_delta_q * (_acc_1 - linearized_ba);
+    Vector3d un_acc_1 =
+        result_delta_q * (current.linear_acceleration - linearized_ba);
     Vector3d un_acc = 0.5 * (un_acc_0 + un_acc_1);
-    result_delta_p = delta_p + delta_v * _dt + 0.5 * un_acc * _dt * _dt;
+    result_delta_p = delta_p + delta_v * _dt + 0.5 * un_acc * dt_sq;
     result_delta_v = delta_v + un_acc * _dt;
     result_linearized_ba = linearized_ba;
     result_linearized_bg = linearized_bg;
 
     if (update_jacobian) {
-      Vector3d w_x = 0.5 * (_gyr_0 + _gyr_1) - linearized_bg;
-      Vector3d a_0_x = _acc_0 - linearized_ba;
-      Vector3d a_1_x = _acc_1 - linearized_ba;
+      Vector3d w_x = 0.5 * (last.angular_velocity + current.angular_velocity) -
+                     linearized_bg;
+      Vector3d a_0_x = last.linear_acceleration - linearized_ba;
+      Vector3d a_1_x = current.linear_acceleration - linearized_ba;
       Matrix3d R_w_x, R_a_0_x, R_a_1_x;
 
       R_w_x << 0, -w_x(2), w_x(1), w_x(2), 0, -w_x(0), -w_x(1), w_x(0), 0;
@@ -105,16 +103,16 @@ class IntegrationBase : public std::enable_shared_from_this<IntegrationBase> {
       MatrixXd F = MatrixXd::Zero(15, 15);
       F.block<3, 3>(0, 0) = Matrix3d::Identity();
       F.block<3, 3>(0, 3) =
-          -0.25 * delta_q.toRotationMatrix() * R_a_0_x * _dt * _dt +
+          -0.25 * delta_q.toRotationMatrix() * R_a_0_x * dt_sq +
           -0.25 * result_delta_q.toRotationMatrix() * R_a_1_x *
-              (Matrix3d::Identity() - R_w_x * _dt) * _dt * _dt;
+              (Matrix3d::Identity() - R_w_x * _dt) * dt_sq;
       F.block<3, 3>(0, 6) = MatrixXd::Identity(3, 3) * _dt;
       F.block<3, 3>(0, 9) =
           -0.25 *
           (delta_q.toRotationMatrix() + result_delta_q.toRotationMatrix()) *
-          _dt * _dt;
-      F.block<3, 3>(0, 12) = -0.25 * result_delta_q.toRotationMatrix() *
-                             R_a_1_x * _dt * _dt * -_dt;
+          dt_sq;
+      F.block<3, 3>(0, 12) =
+          -0.25 * result_delta_q.toRotationMatrix() * R_a_1_x * dt_sq * -_dt;
       F.block<3, 3>(3, 3) = Matrix3d::Identity() - R_w_x * _dt;
       F.block<3, 3>(3, 12) = -1.0 * MatrixXd::Identity(3, 3) * _dt;
       F.block<3, 3>(6, 3) = -0.5 * delta_q.toRotationMatrix() * R_a_0_x * _dt +
@@ -132,11 +130,10 @@ class IntegrationBase : public std::enable_shared_from_this<IntegrationBase> {
       // cout<<"A"<<endl<<A<<endl;
 
       MatrixXd V = MatrixXd::Zero(15, 18);
-      V.block<3, 3>(0, 0) = 0.25 * delta_q.toRotationMatrix() * _dt * _dt;
+      V.block<3, 3>(0, 0) = 0.25 * delta_q.toRotationMatrix() * dt_sq;
       V.block<3, 3>(0, 3) = 0.25 * -result_delta_q.toRotationMatrix() *
-                            R_a_1_x * _dt * _dt * 0.5 * _dt;
-      V.block<3, 3>(0, 6) =
-          0.25 * result_delta_q.toRotationMatrix() * _dt * _dt;
+                            R_a_1_x * dt_sq * 0.5 * _dt;
+      V.block<3, 3>(0, 6) = 0.25 * result_delta_q.toRotationMatrix() * dt_sq;
       V.block<3, 3>(0, 9) = V.block<3, 3>(0, 3);
       V.block<3, 3>(3, 3) = 0.5 * MatrixXd::Identity(3, 3) * _dt;
       V.block<3, 3>(3, 9) = 0.5 * MatrixXd::Identity(3, 3) * _dt;
@@ -155,19 +152,16 @@ class IntegrationBase : public std::enable_shared_from_this<IntegrationBase> {
     }
   }
 
-  void propagate(double _dt, const Eigen::Vector3d &_acc_1,
-                 const Eigen::Vector3d &_gyr_1) {
-    dt = _dt;
-    acc_1 = _acc_1;
-    gyr_1 = _gyr_1;
+  void propagate(const IMUData &data) {
+    current_imu = data;
     Vector3d result_delta_p;
     Quaterniond result_delta_q;
     Vector3d result_delta_v;
     Vector3d result_linearized_ba;
     Vector3d result_linearized_bg;
 
-    midPointIntegration(_dt, acc_0, gyr_0, _acc_1, _gyr_1, delta_p, delta_q,
-                        delta_v, linearized_ba, linearized_bg, result_delta_p,
+    midPointIntegration(last_imu, data, delta_p, delta_q, delta_v,
+                        linearized_ba, linearized_bg, result_delta_p,
                         result_delta_q, result_delta_v, result_linearized_ba,
                         result_linearized_bg, 1);
 
@@ -179,9 +173,8 @@ class IntegrationBase : public std::enable_shared_from_this<IntegrationBase> {
     linearized_ba = result_linearized_ba;
     linearized_bg = result_linearized_bg;
     delta_q.normalize();
-    sum_dt += dt;
-    acc_0 = acc_1;
-    gyr_0 = gyr_1;
+    sum_dt += data.timestamp;
+    last_imu = current_imu;
   }
 
   Eigen::Matrix<double, 15, 1> evaluate(
@@ -220,11 +213,10 @@ class IntegrationBase : public std::enable_shared_from_this<IntegrationBase> {
     return residuals;
   }
 
-  double dt;
-  Eigen::Vector3d acc_0, gyr_0;
-  Eigen::Vector3d acc_1, gyr_1;
+  IMUData last_imu;
+  IMUData current_imu;
+  const IMUData linearized_imu;
 
-  const Eigen::Vector3d linearized_acc, linearized_gyr;
   Eigen::Vector3d linearized_ba, linearized_bg;
 
   Eigen::Matrix<double, 15, 15> jacobian, covariance;
@@ -236,8 +228,5 @@ class IntegrationBase : public std::enable_shared_from_this<IntegrationBase> {
   Eigen::Vector3d delta_p;
   Eigen::Quaterniond delta_q;
   Eigen::Vector3d delta_v;
-
-  std::vector<double> dt_buf;
-  std::vector<Eigen::Vector3d> acc_buf;
-  std::vector<Eigen::Vector3d> gyr_buf;
+  std::vector<IMUData> imu_buffer;
 };

@@ -1,9 +1,10 @@
 
 #ifndef SENSOR_DATA_TYPE_H
 #define SENSOR_DATA_TYPE_H
+#include <vins/common/data_type.h>
+
 #include <Eigen/Dense>
 #include <Eigen/Geometry>
-#include <atomic>
 #include <mutex>
 #include <opencv2/opencv.hpp>
 

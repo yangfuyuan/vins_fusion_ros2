@@ -44,8 +44,8 @@ cv::Mat fromMsg(const sensor_msgs::msg::Image &img_msg) {
   return cv::Mat();
 }
 
-Estimator::FeatureFrame fromMsg(const sensor_msgs::msg::PointCloud &msg) {
-  Estimator::FeatureFrame featureFrame;
+FeatureFrame fromMsg(const sensor_msgs::msg::PointCloud &msg) {
+  FeatureFrame featureFrame;
   for (unsigned int i = 0; i < msg.points.size(); i++) {
     if (msg.channels.size() < 5) {
       continue;
