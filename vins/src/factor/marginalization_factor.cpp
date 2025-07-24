@@ -341,7 +341,7 @@ std::vector<double *> MarginalizationInfo::getParameterBlocks(
 }
 
 MarginalizationFactor::MarginalizationFactor(
-    MarginalizationInfo *_marginalization_info)
+    MarginalizationInfo::Ptr _marginalization_info)
     : marginalization_info(_marginalization_info) {
   int cnt = 0;
   for (auto it : marginalization_info->keep_block_size) {

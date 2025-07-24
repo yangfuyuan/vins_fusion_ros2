@@ -877,7 +877,7 @@ void Estimator::optimization() {
   if (last_marginalization_info && last_marginalization_info->valid) {
     // construct new marginlization_factor
     MarginalizationFactor *marginalization_factor =
-        new MarginalizationFactor(last_marginalization_info.get());
+        new MarginalizationFactor(last_marginalization_info);
     problem.AddResidualBlock(marginalization_factor, NULL,
                              last_marginalization_parameter_blocks);
   }
@@ -885,7 +885,7 @@ void Estimator::optimization() {
     for (int i = 0; i < frameCount; i++) {
       int j = i + 1;
       if (pre_integrations[j]->sum_dt > 10.0) continue;
-      IMUFactor *imu_factor = new IMUFactor(pre_integrations[j].get());
+      IMUFactor *imu_factor = new IMUFactor(pre_integrations[j]);
       problem.AddResidualBlock(imu_factor, NULL, para_Pose[i],
                                para_SpeedBias[i], para_Pose[j],
                                para_SpeedBias[j]);
@@ -985,7 +985,7 @@ void Estimator::optimization() {
       }
       // construct new marginlization_factor
       MarginalizationFactor *marginalization_factor =
-          new MarginalizationFactor(last_marginalization_info.get());
+          new MarginalizationFactor(last_marginalization_info);
       ResidualBlockInfo *residual_block_info = new ResidualBlockInfo(
           marginalization_factor, NULL, last_marginalization_parameter_blocks,
           drop_set);
@@ -994,7 +994,7 @@ void Estimator::optimization() {
 
     if (USE_IMU) {
       if (pre_integrations[1]->sum_dt < 10.0) {
-        IMUFactor *imu_factor = new IMUFactor(pre_integrations[1].get());
+        IMUFactor *imu_factor = new IMUFactor(pre_integrations[1]);
         ResidualBlockInfo *residual_block_info = new ResidualBlockInfo(
             imu_factor, NULL,
             vector<double *>{para_Pose[0], para_SpeedBias[0], para_Pose[1],
@@ -1115,7 +1115,7 @@ void Estimator::optimization() {
         }
         // construct new marginlization_factor
         MarginalizationFactor *marginalization_factor =
-            new MarginalizationFactor(last_marginalization_info.get());
+            new MarginalizationFactor(last_marginalization_info);
         ResidualBlockInfo *residual_block_info = new ResidualBlockInfo(
             marginalization_factor, NULL, last_marginalization_parameter_blocks,
             drop_set);

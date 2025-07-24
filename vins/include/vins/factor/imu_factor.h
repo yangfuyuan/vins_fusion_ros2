@@ -20,7 +20,7 @@
 class IMUFactor : public ceres::SizedCostFunction<15, 7, 9, 7, 9> {
  public:
   IMUFactor() = delete;
-  IMUFactor(IntegrationBase *_pre_integration)
+  IMUFactor(IntegrationBase::Ptr _pre_integration)
       : pre_integration(_pre_integration) {}
   virtual bool Evaluate(double const *const *parameters, double *residuals,
                         double **jacobians) const {
@@ -187,5 +187,5 @@ class IMUFactor : public ceres::SizedCostFunction<15, 7, 9, 7, 9> {
     return true;
   }
 
-  IntegrationBase *pre_integration;
+  IntegrationBase::Ptr pre_integration;
 };

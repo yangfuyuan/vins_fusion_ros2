@@ -87,9 +87,9 @@ class MarginalizationInfo
 
 class MarginalizationFactor : public ceres::CostFunction {
  public:
-  MarginalizationFactor(MarginalizationInfo *_marginalization_info);
+  MarginalizationFactor(MarginalizationInfo::Ptr _marginalization_info);
   virtual bool Evaluate(double const *const *parameters, double *residuals,
                         double **jacobians) const;
 
-  MarginalizationInfo *marginalization_info;
+  MarginalizationInfo::Ptr marginalization_info;
 };
