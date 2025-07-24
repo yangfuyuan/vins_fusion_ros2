@@ -104,3 +104,27 @@ sensor_msgs::msg::Image toMsg(const cv::Mat &msg) {
       cv_bridge::CvImage(header, "bgr8", msg).toImageMsg();
   return *img;
 }
+
+sensor_msgs::msg::PointCloud toMsg(const PointCloudData &msg) {
+  sensor_msgs::msg::PointCloud pointcloud;
+  pointcloud.header.stamp = toMsg(msg.timestamp);
+  pointcloud.header.frame_id = "world";
+  pointcloud.points.reserve(msg.points.size());
+  for (const auto &pt : msg.points) {
+    geometry_msgs::msg::Point32 pt_ros;
+    pt_ros.x = static_cast<float>(pt.x());
+    pt_ros.y = static_cast<float>(pt.y());
+    pt_ros.z = static_cast<float>(pt.z());
+    pointcloud.points.emplace_back(pt_ros);
+  }
+
+  pointcloud.channels.reserve(msg.channels.size());
+  for (const auto &ch : msg.channels) {
+    sensor_msgs::msg::ChannelFloat32 ch_ros;
+    ch_ros.name = ch.name;
+    ch_ros.values = ch.values;
+    pointcloud.channels.emplace_back(std::move(ch_ros));
+  }
+
+  return pointcloud;
+}

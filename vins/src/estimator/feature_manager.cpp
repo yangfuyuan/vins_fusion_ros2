@@ -11,10 +11,6 @@
 #include <vins/estimator/feature_manager.h>
 #include <vins/logger/logger.h>
 
-int FeaturePerId::endFrame() {
-  return start_frame + feature_per_frame.size() - 1;
-}
-
 FeatureManager::FeatureManager(Matrix3d _Rs[]) : Rs(_Rs) {
   for (int i = 0; i < NUM_OF_CAM; i++) ric[i].setIdentity();
 }
@@ -120,9 +116,9 @@ void FeatureManager::setDepth(const VectorXd &x) {
 
     it_per_id.estimated_depth = 1.0 / x(++feature_index);
     if (it_per_id.estimated_depth < 0) {
-      it_per_id.solve_flag = 2;
+      it_per_id.solve_flag = FeaturePerId::SOLVED_FAIL;
     } else
-      it_per_id.solve_flag = 1;
+      it_per_id.solve_flag = FeaturePerId::SOLVED_SUCCESS;
   }
 }
 
@@ -130,7 +126,7 @@ void FeatureManager::removeFailures() {
   for (auto it = feature.begin(), it_next = feature.begin();
        it != feature.end(); it = it_next) {
     it_next++;
-    if (it->solve_flag == 2) feature.erase(it);
+    if (it->isSolveFailed()) feature.erase(it);
   }
 }
 

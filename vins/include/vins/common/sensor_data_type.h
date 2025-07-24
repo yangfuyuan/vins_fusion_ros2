@@ -20,9 +20,9 @@ class SafeClass {
     has_value = true;
   }
 
-  bool get(T &value) {
+  bool get(T &value, bool force = false) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!has_value) return false;
+    if (!has_value && !force) return false;
     value = data_;
     has_value = false;
     return true;
@@ -109,6 +109,17 @@ struct ImageData : SensorDataBase {
 struct PoseSequenceData : SensorDataBase {
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
   std::vector<Eigen::Vector3d> poses;
+};
+
+struct ChannelFloat {
+  std::string name;
+  std::vector<float> values;
+};
+
+struct PointCloudData : SensorDataBase {
+  EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+  std::vector<Eigen::Vector3d> points;
+  std::vector<ChannelFloat> channels;
 };
 
 #endif  //

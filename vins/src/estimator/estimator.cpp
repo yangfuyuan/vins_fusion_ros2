@@ -59,6 +59,7 @@ void Estimator::resetState() {
   for (int i = 0; i < NUM_OF_CAM; i++) {
     cameraTranslation[i] = Vector3d::Zero();
     cameraRotation[i] = Matrix3d::Identity();
+    updateCameraPose(i);
   }
 
   isFirstIMUReceived = false, backCount = 0;
@@ -81,6 +82,7 @@ void Estimator::setParameter() {
   for (int i = 0; i < NUM_OF_CAM; i++) {
     cameraTranslation[i] = TIC[i];
     cameraRotation[i] = RIC[i];
+    updateCameraPose(i);
     VINS_INFO << " exitrinsic cam[" << i << "]: \n"
               << cameraRotation[i] << "\n"
               << cameraTranslation[i].transpose();
@@ -245,8 +247,86 @@ void Estimator::processMeasurements() {
       std::lock_guard<std::mutex> lock(processingMutex);
       processImage(feature.second, feature.first);
       printStatistics(currentTimestamp);
+      collectPointCloudAll(feature.first);
       previousTimestamp = currentTimestamp;
     }
+  }
+}
+void Estimator::updateCameraPose(int index) {
+  PoseData pose;
+  pose.position = cameraTranslation[index];
+  pose.orientation = Quaterniond(cameraRotation[index]);
+  safe_camera_pose[index].set(pose);
+}
+
+void Estimator::collectPointCloudAll(Timestamp timestamp) {
+  PointCloudData main_cloud;
+  PointCloudData point_cloud;
+  PointCloudData margin_cloud;
+  main_cloud.timestamp = timestamp;
+  point_cloud.timestamp = timestamp;
+  margin_cloud.timestamp = timestamp;
+
+  for (const auto &it_per_id : featureManager.feature) {
+    int used_num = it_per_id.feature_per_frame.size();
+    int start_frame = it_per_id.start_frame;
+
+    // Only use well-tracked and solved features
+    if (used_num < 2 || !it_per_id.isSolved()) continue;
+
+    int imu_i = start_frame;
+    const auto &first_obs = it_per_id.feature_per_frame[0];
+    Eigen::Vector3d pts_i = first_obs.point * it_per_id.estimated_depth;
+    Eigen::Vector3d w_pts_i =
+        rotations[imu_i] * (cameraRotation[0] * pts_i + cameraTranslation[0]) +
+        positions[imu_i];
+
+    // 1. Main cloud
+    if (start_frame < WINDOW_SIZE - 2 && start_frame <= WINDOW_SIZE * 3 / 4) {
+      main_cloud.points.emplace_back(w_pts_i);
+    }
+
+    // 2. Margin cloud
+    if (start_frame == 0 && used_num <= 2) {
+      margin_cloud.points.emplace_back(w_pts_i);
+    }
+
+    // 3. Current frame cloud
+    if (solver_flag == SolverState::NON_LINEAR &&
+        marginalization_flag == MarginalizationType::MARGIN_OLD) {
+      if (start_frame < WINDOW_SIZE - 2 &&
+          start_frame + used_num - 1 >= WINDOW_SIZE - 2) {
+        int imu_j = WINDOW_SIZE - 2 - start_frame;
+        const auto &cur_obs = it_per_id.feature_per_frame[imu_j];
+        point_cloud.points.emplace_back(w_pts_i);
+
+        ChannelFloat p_2d;
+        p_2d.values.push_back(cur_obs.point.x());
+        p_2d.values.push_back(cur_obs.point.y());
+        p_2d.values.push_back(cur_obs.uv.x());
+        p_2d.values.push_back(cur_obs.uv.y());
+        p_2d.values.push_back(it_per_id.feature_id);
+        point_cloud.channels.push_back(p_2d);
+      }
+    }
+  }
+  if (!main_cloud.points.empty()) {
+    safe_main_cloud.set(main_cloud);
+  }
+  if (!margin_cloud.points.empty()) {
+    safe_margin_cloud.set(margin_cloud);
+  }
+  if (!point_cloud.points.empty()) {
+    safe_point_cloud.set(point_cloud);
+  }
+  if (solver_flag == SolverState::NON_LINEAR &&
+      marginalization_flag == MarginalizationType::MARGIN_OLD) {
+    int i = WINDOW_SIZE - 2;
+    PoseData pose;
+    pose.timestamp = Headers[i];
+    pose.position = positions[i];
+    pose.orientation = Quaterniond(rotations[i]);
+    safe_keyframe_pose.set(pose);
   }
 }
 
@@ -467,12 +547,12 @@ void Estimator::processImage(const FeatureFrame &features,
     lastPosition0 = positions[0];
     updateLatestStates();
   }
-  vo_odom.timestamp = timestamp;
-  vo_odom.position = positions[WINDOW_SIZE];
-  vo_odom.orientation = Quaterniond(rotations[WINDOW_SIZE]);
-  vo_odom.velocity = velocities[WINDOW_SIZE];
+  vio_odom.timestamp = timestamp;
+  vio_odom.position = positions[WINDOW_SIZE];
+  vio_odom.orientation = Quaterniond(rotations[WINDOW_SIZE]);
+  vio_odom.velocity = velocities[WINDOW_SIZE];
   if (solver_flag == SolverState::NON_LINEAR) {
-    safe_vio_odom.set(vo_odom);
+    safe_vio_odom.set(vio_odom);
   }
 }
 
@@ -788,6 +868,7 @@ void Estimator::double2vector() {
                                       para_Ex_Pose[i][4], para_Ex_Pose[i][5])
                               .normalized()
                               .toRotationMatrix();
+      updateCameraPose(i);
     }
   }
 
@@ -1267,16 +1348,19 @@ bool Estimator::getVisualInertialOdom(OdomData &data) {
   return true;
 }
 
-bool Estimator::getKeyPoses(std::vector<Eigen::Vector3d> &poses) {
+bool Estimator::getKeyPoses(PoseSequenceData &poses) {
   if (!safe_key_poses.check()) {
     return false;
   }
-  PoseSequenceData data;
-  safe_key_poses.get(data);
-  if (data.poses.size() < 1) {
+  safe_key_poses.get(poses);
+  if (poses.poses.size() < 1) {
     return false;
   }
-  poses = data.poses;
+  return true;
+}
+
+bool Estimator::getCameraPose(int index, PoseData &data) {
+  safe_camera_pose[index].get(data, true);
   return true;
 }
 
@@ -1285,6 +1369,36 @@ bool Estimator::getTrackImage(ImageData &image) {
     return false;
   }
   safe_track_image.get(image);
+  return true;
+}
+
+bool Estimator::getMainCloud(PointCloudData &data) {
+  if (!safe_main_cloud.check()) {
+    return false;
+  }
+  safe_main_cloud.get(data);
+  return true;
+}
+bool Estimator::getMarginCloud(PointCloudData &data) {
+  if (!safe_margin_cloud.check()) {
+    return false;
+  }
+  safe_margin_cloud.get(data);
+  return true;
+}
+bool Estimator::getkeyframeCloud(PointCloudData &data) {
+  if (!safe_point_cloud.check()) {
+    return false;
+  }
+  safe_point_cloud.get(data);
+  return true;
+}
+
+bool Estimator::getkeyframePose(PoseData &data) {
+  if (!safe_keyframe_pose.check()) {
+    return false;
+  }
+  safe_keyframe_pose.get(data);
   return true;
 }
 

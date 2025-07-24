@@ -3,6 +3,7 @@
 
 VinsEstimator::VinsEstimator() : rclcpp::Node("vins_estimator") {
   estimator_ = std::make_shared<Estimator>();
+  tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
   initialize();
 }
 
@@ -17,6 +18,7 @@ void VinsEstimator::initializeParamters() {
   auto config_file = readParam<std::string>(this, "config_file");
   world_frame_id = readParam<std::string>(this, "world_frame_id", "world");
   body_frame_id = readParam<std::string>(this, "body_frame_id", "body");
+  camera_frame_id = readParam<std::string>(this, "camera_frame_id", "camera");
 
   readParameters(config_file);
   estimator_->setParameter();
@@ -94,6 +96,14 @@ void VinsEstimator::initializerPublishers() {
   pub_odometry = this->create_publisher<nav_msgs::msg::Odometry>("odometry", 1);
   pub_image_track =
       this->create_publisher<sensor_msgs::msg::Image>("image_track", 1);
+  pub_point_cloud =
+      this->create_publisher<sensor_msgs::msg::PointCloud>("point_cloud", 1);
+  pub_margin_cloud =
+      this->create_publisher<sensor_msgs::msg::PointCloud>("margin_cloud", 1);
+  pub_keyframe_point =
+      this->create_publisher<sensor_msgs::msg::PointCloud>("keyframe_point", 1);
+  pub_keyframe_pose =
+      this->create_publisher<nav_msgs::msg::Odometry>("keyframe_pose", 1);
 }
 
 void VinsEstimator::stereoCallback(
@@ -107,6 +117,44 @@ void VinsEstimator::stereoCallback(
 }
 
 void VinsEstimator::timeCallback() {
+  publishImuData();
+  publishOdometry();
+  publishKeyFrameData();
+  publishImage();
+  publishPointCloud();
+}
+
+void VinsEstimator::publishPointCloud() {
+  PointCloudData cloud;
+  if (estimator_->getMainCloud(cloud)) {
+    auto msg = toMsg(cloud);
+    msg.header.frame_id = world_frame_id;
+    pub_point_cloud->publish(msg);
+  }
+
+  if (estimator_->getMarginCloud(cloud)) {
+    auto msg = toMsg(cloud);
+    msg.header.frame_id = world_frame_id;
+    pub_margin_cloud->publish(msg);
+  }
+
+  if (estimator_->getkeyframeCloud(cloud)) {
+    auto msg = toMsg(cloud);
+    msg.header.frame_id = world_frame_id;
+    pub_keyframe_point->publish(msg);
+  }
+}
+
+void VinsEstimator::publishImage() {
+  ImageData image;
+  if (estimator_->getTrackImage(image)) {
+    auto img = toMsg(image.image0);
+    img.header.frame_id = world_frame_id;
+    img.header.stamp = toMsg(image.timestamp);
+    pub_image_track->publish(img);
+  }
+}
+void VinsEstimator::publishImuData() {
   OdomData imu_odom;
   if (estimator_->getIntegratedImuOdom(imu_odom)) {
     nav_msgs::msg::Odometry odometry = toMsg(imu_odom);
@@ -114,7 +162,8 @@ void VinsEstimator::timeCallback() {
     odometry.child_frame_id = body_frame_id;
     pub_latest_odometry->publish(odometry);
   }
-
+}
+void VinsEstimator::publishOdometry() {
   OdomData vio_odom;
   if (estimator_->getVisualInertialOdom(vio_odom)) {
     nav_msgs::msg::Odometry odometry = toMsg(vio_odom);
@@ -130,13 +179,48 @@ void VinsEstimator::timeCallback() {
     path.header.frame_id = world_frame_id;
     path.poses.push_back(pose_stamped);
     pub_path->publish(path);
-  }
 
-  ImageData image;
-  if (estimator_->getTrackImage(image)) {
-    auto img = toMsg(image.image0);
-    img.header.frame_id = world_frame_id;
-    img.header.stamp = toMsg(image.timestamp);
-    pub_image_track->publish(img);
+    // world-->body
+    geometry_msgs::msg::TransformStamped tf_msg;
+    tf_msg.header.stamp = odometry.header.stamp;
+    tf_msg.header.frame_id = world_frame_id;
+    tf_msg.child_frame_id = body_frame_id;
+    tf_msg.transform.translation.x = odometry.pose.pose.position.x;
+    tf_msg.transform.translation.y = odometry.pose.pose.position.y;
+    tf_msg.transform.translation.z = odometry.pose.pose.position.z;
+    tf_msg.transform.rotation = odometry.pose.pose.orientation;
+    tf_broadcaster_->sendTransform(tf_msg);
+    PoseData camera_pose;
+    estimator_->getCameraPose(0, camera_pose);
+
+    // body-->camera
+    tf_msg.header.frame_id = body_frame_id;
+    tf_msg.child_frame_id = camera_frame_id;
+    tf_msg.transform.translation.x = camera_pose.position.x();
+    tf_msg.transform.translation.y = camera_pose.position.y();
+    tf_msg.transform.translation.z = camera_pose.position.z();
+    tf_msg.transform.rotation.x = camera_pose.orientation.x();
+    tf_msg.transform.rotation.y = camera_pose.orientation.y();
+    tf_msg.transform.rotation.z = camera_pose.orientation.z();
+    tf_msg.transform.rotation.w = camera_pose.orientation.w();
+    tf_broadcaster_->sendTransform(tf_msg);
+  }
+}
+
+void VinsEstimator::publishKeyFrameData() {
+  PoseData pose;
+  if (estimator_->getkeyframePose(pose)) {
+    nav_msgs::msg::Odometry odometry;
+    odometry.header.stamp = toMsg(pose.timestamp);
+    odometry.header.frame_id = world_frame_id;
+    odometry.child_frame_id = body_frame_id;
+    odometry.pose.pose.position.x = pose.position.x();
+    odometry.pose.pose.position.y = pose.position.y();
+    odometry.pose.pose.position.z = pose.position.z();
+    odometry.pose.pose.orientation.x = pose.orientation.x();
+    odometry.pose.pose.orientation.y = pose.orientation.y();
+    odometry.pose.pose.orientation.z = pose.orientation.z();
+    odometry.pose.pose.orientation.w = pose.orientation.w();
+    pub_keyframe_pose->publish(odometry);
   }
 }

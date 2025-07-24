@@ -63,8 +63,15 @@ class Estimator {
 
   bool getIntegratedImuOdom(OdomData &data);
   bool getVisualInertialOdom(OdomData &data);
-  bool getKeyPoses(std::vector<Eigen::Vector3d> &poses);
+  bool getKeyPoses(PoseSequenceData &poses);
   bool getTrackImage(ImageData &image);
+
+  bool getCameraPose(int index, PoseData &data);
+
+  bool getMainCloud(PointCloudData &data);
+  bool getMarginCloud(PointCloudData &data);
+  bool getkeyframeCloud(PointCloudData &data);
+  bool getkeyframePose(PoseData &data);
 
  private:
   // 内部处理函数
@@ -96,6 +103,8 @@ class Estimator {
   void initFirstIMUPose(const vector<IMUData> &data);
 
  private:
+  void updateCameraPose(int index);
+  void collectPointCloudAll(Timestamp timestamp);
   void printStatistics(Timestamp timestamp);
   template <typename Container>
   void clearBuffer(Container &container) {
@@ -159,10 +168,12 @@ class Estimator {
   bool isFirstIMUReceived;
   bool failure_occur;
 
-  vector<Vector3d> point_cloud;
-  vector<Vector3d> margin_cloud;
-
   //
+  SafeClass<PointCloudData> safe_main_cloud;
+  SafeClass<PointCloudData> safe_point_cloud;
+  SafeClass<PointCloudData> safe_margin_cloud;
+  SafeClass<PoseData> safe_camera_pose[2];
+  SafeClass<PoseData> safe_keyframe_pose;
   SafeClass<PoseSequenceData> safe_key_poses;
   PoseSequenceData key_poses;
   ImageData track_image;
@@ -170,7 +181,7 @@ class Estimator {
   SafeClass<OdomData> safe_imu_pre_odom;
   OdomData imu_odom;
   SafeClass<OdomData> safe_vio_odom;
-  OdomData vo_odom;
+  OdomData vio_odom;
 
   double para_Pose[WINDOW_SIZE + 1][SIZE_POSE];
   double para_SpeedBias[WINDOW_SIZE + 1][SIZE_SPEEDBIAS];

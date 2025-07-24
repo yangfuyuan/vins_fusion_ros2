@@ -33,6 +33,12 @@ class VinsEstimator : public rclcpp::Node {
   void stereoCallback(const sensor_msgs::msg::Image::ConstSharedPtr& img0,
                       const sensor_msgs::msg::Image::ConstSharedPtr& img1);
 
+  void publishPointCloud();
+  void publishImuData();
+  void publishOdometry();
+  void publishImage();
+  void publishKeyFrameData();
+
  private:
   std::shared_ptr<Estimator> estimator_;
   std::vector<rclcpp::SubscriptionBase::SharedPtr> subs_;
@@ -43,15 +49,19 @@ class VinsEstimator : public rclcpp::Node {
   rclcpp::CallbackGroup::SharedPtr image_callback_group_;
   rclcpp::CallbackGroup::SharedPtr feature_callback_group_;
   rclcpp::TimerBase::SharedPtr publish_timer_;
+  std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
   //
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pub_image_track;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pub_odometry,
-      pub_latest_odometry;
+      pub_latest_odometry, pub_keyframe_pose;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pub_path;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud>::SharedPtr pub_point_cloud,
+      pub_margin_cloud, pub_keyframe_point;
 
   //
   std::string world_frame_id;
   std::string body_frame_id;
+  std::string camera_frame_id;
 
   nav_msgs::msg::Path path;
 };

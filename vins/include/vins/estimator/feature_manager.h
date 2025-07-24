@@ -55,21 +55,21 @@ class FeaturePerFrame {
 
 class FeaturePerId {
  public:
+  enum SolveStatus { NOT_SOLVED = 0, SOLVED_SUCCESS = 1, SOLVED_FAIL = 2 };
   const int feature_id;
-  int start_frame;
-  vector<FeaturePerFrame> feature_per_frame;
-  int used_num;
-  double estimated_depth;
-  int solve_flag;  // 0 haven't solve yet; 1 solve succ; 2 solve fail;
+  int start_frame = 0;
+  std::vector<FeaturePerFrame> feature_per_frame;
+  int used_num = 0;
+  double estimated_depth = -1.0;
+  SolveStatus solve_flag = NOT_SOLVED;
+  FeaturePerId(int id, int start) : feature_id(id), start_frame(start) {}
 
-  FeaturePerId(int _feature_id, int _start_frame)
-      : feature_id(_feature_id),
-        start_frame(_start_frame),
-        used_num(0),
-        estimated_depth(-1.0),
-        solve_flag(0) {}
+  int endFrame() const {
+    return start_frame + static_cast<int>(feature_per_frame.size()) - 1;
+  }
+  bool isSolved() const { return solve_flag == SOLVED_SUCCESS; }
 
-  int endFrame();
+  bool isSolveFailed() const { return solve_flag == SOLVED_FAIL; }
 };
 
 class FeatureManager {
