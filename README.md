@@ -20,6 +20,10 @@ This repository is a ROS 2 adaptation of the original [VINS-Fusion](https://gith
   - [Eigen-3.3.9](https://github.com/zinuok/VINS-Fusion#-eigen-1)
   - glog
 
+### Install Dependencies
+```bash
+sudo apt-get install libgoogle-glog-dev libeigen3-dev libceres-dev libopencv-dev 
+```
 ## Build Instructions
 
 ```bash
