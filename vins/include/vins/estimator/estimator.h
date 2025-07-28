@@ -87,9 +87,9 @@ class Estimator {
   void slideWindow();
   void slideWindowNew();
   void slideWindowOld();
-  void optimization();
-  void vector2double();
-  void double2vector();
+  void optimize();
+  void prepareParameters();
+  void updateEstimates();
   bool failureDetection();
   bool getIMUInterval(double t0, double t1, vector<IMUData> &data);
   void predictPtsInNextFrame();
@@ -103,6 +103,21 @@ class Estimator {
   void initFirstIMUPose(const vector<IMUData> &data);
 
  private:
+  void AddPoseParameterBlocks(ceres::Problem &problem);
+  void AddExtrinsicParameterBlocks(ceres::Problem &problem);
+  void AddTimeDelayParameterBlock(ceres::Problem &problem);
+  void AddMarginalizationFactor(ceres::Problem &problem);
+  void AddIMUFactors(ceres::Problem &problem);
+  void AddFeatureFactors(ceres::Problem &problem);
+  void solveOptimization();
+
+  void processOldMarginalization();
+  void processNewMarginalization();
+  std::shared_ptr<ResidualBlockInfo> createIMUResidualBlock();
+  void addFeatureResidualBlocks(
+      std::shared_ptr<MarginalizationInfo> &marg_info);
+  std::unordered_map<long, double *> createAddrShift(bool is_old);
+
   void updateCameraPose(int index);
   void collectPointCloudAll(Timestamp timestamp);
   void printStatistics(Timestamp timestamp);
