@@ -86,7 +86,7 @@ bool FeatureManager::addFeatureCheckParallax(
     return true;
   } else {
     last_average_parallax = parallax_sum / parallax_num * FOCAL_LENGTH;
-    return parallax_sum / parallax_num >= options->MIN_PARALLAX;
+    return parallax_sum / parallax_num >= options->min_parllaax_num;
   }
 }
 
@@ -277,7 +277,7 @@ void FeatureManager::triangulate(int frameCnt, Vector3d Ps[], Matrix3d Rs[],
       if (depth > 0)
         it_per_id.estimated_depth = depth;
       else
-        it_per_id.estimated_depth = options->INIT_DEPTH;
+        it_per_id.estimated_depth = options->init_estimated_depth;
       continue;
     } else if (it_per_id.feature_per_frame.size() > 1) {
       int imu_i = it_per_id.start_frame;
@@ -305,7 +305,7 @@ void FeatureManager::triangulate(int frameCnt, Vector3d Ps[], Matrix3d Rs[],
       if (depth > 0)
         it_per_id.estimated_depth = depth;
       else
-        it_per_id.estimated_depth = options->INIT_DEPTH;
+        it_per_id.estimated_depth = options->init_estimated_depth;
       continue;
     }
     it_per_id.used_num = it_per_id.feature_per_frame.size();
@@ -347,7 +347,7 @@ void FeatureManager::triangulate(int frameCnt, Vector3d Ps[], Matrix3d Rs[],
     it_per_id.estimated_depth = svd_method;
 
     if (it_per_id.estimated_depth < 0.1) {
-      it_per_id.estimated_depth = options->INIT_DEPTH;
+      it_per_id.estimated_depth = options->init_estimated_depth;
     }
   }
 }
@@ -389,7 +389,7 @@ void FeatureManager::removeBackShiftDepth(Eigen::Matrix3d marg_R,
         if (dep_j > 0)
           it->estimated_depth = dep_j;
         else
-          it->estimated_depth = options->INIT_DEPTH;
+          it->estimated_depth = options->init_estimated_depth;
       }
     }
   }

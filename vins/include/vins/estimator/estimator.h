@@ -144,7 +144,6 @@ class Estimator {
   Timestamp previousTimestamp = -1;
   Timestamp currentTimestamp = 0;
   Timestamp initialTimestamp = 0;
-  double timeDelay = 0.0;
 
   bool openExEstimation;
   SolverState solver_flag;

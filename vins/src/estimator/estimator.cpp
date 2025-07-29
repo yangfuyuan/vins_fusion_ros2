@@ -98,9 +98,8 @@ void Estimator::initializeCamerasFromOptions() {
       FOCAL_LENGTH / 1.5 * Matrix2d::Identity();
   ProjectionOneFrameTwoCamFactor::sqrt_info =
       FOCAL_LENGTH / 1.5 * Matrix2d::Identity();
-  timeDelay = options->TD;
-  gravity = options->imu.G;
-  featureTracker.readIntrinsicParameter(options->CAM_NAMES);
+  gravity = options->imu.gravity();
+  featureTracker.readIntrinsicParameter(options->camera_names);
 }
 
 void Estimator::inputImage(const ImageData &image) {
@@ -114,7 +113,7 @@ void Estimator::inputImage(const ImageData &image) {
     featureFrame =
         featureTracker.trackImage(image.timestamp, image.image0, image.image1);
   }
-  if (options->SHOW_TRACK) {
+  if (options->shouldShowTrack()) {
     track_image.image0 = featureTracker.getTrackImage();
     track_image.timestamp = image.timestamp;
     safe_track_image.set(track_image);
@@ -194,7 +193,7 @@ void Estimator::processMeasurements() {
       featureBuffer.pop();
       lock.unlock();
     }
-    currentTimestamp = feature.first + timeDelay;
+    currentTimestamp = feature.first + options->time_delay;
     {
       std::unique_lock<std::mutex> lock(imu_mutex);
 
@@ -380,7 +379,8 @@ void Estimator::processIMU(const IMUData &data, double deltaTime) {
 
 void Estimator::processImage(const FeatureFrame &features,
                              Timestamp timestamp) {
-  if (featureManager.addFeatureCheckParallax(frameCount, features, timeDelay)) {
+  if (featureManager.addFeatureCheckParallax(frameCount, features,
+                                             options->time_delay)) {
     marginalization_flag = MarginalizationType::MARGIN_OLD;
   } else {
     marginalization_flag = MarginalizationType::MARGIN_SECOND_NEW;
@@ -395,7 +395,7 @@ void Estimator::processImage(const FeatureFrame &features,
       previousImuData, accelerometerBiases[frameCount],
       gyroscopeBiases[frameCount], options->imu);
 
-  if (options->ESTIMATE_EXTRINSIC == 2) {
+  if (options->isInitializingExtrinsic()) {
     if (frameCount != 0) {
       vector<pair<Vector3d, Vector3d>> corres =
           featureManager.getCorresponding(frameCount - 1, frameCount);
@@ -404,7 +404,8 @@ void Estimator::processImage(const FeatureFrame &features,
               corres, pre_integrations[frameCount]->delta_q, calib_ric)) {
         cameraRotation[0] = calib_ric;
         options->RIC[0] = calib_ric;
-        options->ESTIMATE_EXTRINSIC = 1;
+        options->extrinsic_estimation_mode =
+            ExtrinsicEstimationMode::APPROXIMATE;
       }
     }
   }
@@ -414,7 +415,7 @@ void Estimator::processImage(const FeatureFrame &features,
     if (options->isMonoWithImu()) {
       if (frameCount == WINDOW_SIZE) {
         bool result = false;
-        if (options->ESTIMATE_EXTRINSIC != 2 &&
+        if (!options->isInitializingExtrinsic() &&
             (timestamp - initialTimestamp) > 0.1) {
           result = initialStructure();
           initialTimestamp = timestamp;
@@ -777,7 +778,7 @@ void Estimator::prepareParameters() {
   for (int i = 0; i < featureManager.getFeatureCount(); i++)
     para_Feature[i][0] = dep(i);
 
-  para_Td[0][0] = timeDelay;
+  para_Td[0][0] = options->time_delay;
 }
 
 void Estimator::updateEstimates() {
@@ -856,7 +857,7 @@ void Estimator::updateEstimates() {
     dep(i) = para_Feature[i][0];
   featureManager.setDepth(dep);
 
-  if (options->hasImu()) timeDelay = para_Td[0][0];
+  if (options->hasImu()) options->time_delay = para_Td[0][0];
 }
 
 bool Estimator::failureDetection() {
@@ -900,8 +901,9 @@ void Estimator::AddExtrinsicParameterBlocks(ceres::Problem &problem) {
   for (int i = 0; i < options->getNumCameras(); i++) {
     auto *local_param = new PoseLocalParameterization();
     problem.AddParameterBlock(para_Ex_Pose[i], SIZE_POSE, local_param);
-    if ((options->ESTIMATE_EXTRINSIC && frameCount == WINDOW_SIZE &&
-         velocities[0].norm() > 0.2) ||
+    if (((options->isExtrinsicEstimationApproximate() ||
+          options->isInitializingExtrinsic()) &&
+         frameCount == WINDOW_SIZE && velocities[0].norm() > 0.2) ||
         openExEstimation) {
       openExEstimation = 1;
     } else {
@@ -911,7 +913,7 @@ void Estimator::AddExtrinsicParameterBlocks(ceres::Problem &problem) {
 }
 void Estimator::AddTimeDelayParameterBlock(ceres::Problem &problem) {
   problem.AddParameterBlock(para_Td[0], 1);
-  if (!options->ESTIMATE_TD || velocities[0].norm() < 0.2)
+  if (!options->shouldEstimateTD() || velocities[0].norm() < 0.2)
     problem.SetParameterBlockConstant(para_Td[0]);
 }
 void Estimator::AddMarginalizationFactor(ceres::Problem &problem) {
@@ -1463,6 +1465,10 @@ void Estimator::outliersRejection(set<int> &removeIndex) {
 void Estimator::fastPredictIMU(const IMUData &data) {
   std::lock_guard<std::mutex> lock(propagateMutex);
   double dt = data.timestamp - latestImuData.timestamp;
+  if (dt > 1.0) {
+    VINS_ERROR << "Abnormal IMU timestamp jump detected: " << dt;
+    return;
+  }
   Eigen::Vector3d un_acc_0 =
       latest_Q * (latestImuData.linear_acceleration - latestAccelBias) -
       gravity;
@@ -1492,7 +1498,7 @@ void Estimator::updateLatestStates() {
   latestAccelBias = accelerometerBiases[frameCount];
   latestGyroBias = gyroscopeBiases[frameCount];
   latestImuData = previousImuData;
-  latestImuData.timestamp = Headers[frameCount] + timeDelay;
+  latestImuData.timestamp = Headers[frameCount] + options->time_delay;
 
   queue<IMUData> tmp_imu;
   {

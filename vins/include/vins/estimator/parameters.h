@@ -21,24 +21,33 @@
 #include <vector>
 
 using namespace std;
+const double FOCAL_LENGTH = 460.0;
+const int WINDOW_SIZE = 10;
+const int NUM_OF_F = 1000;
+
+enum class ExtrinsicEstimationMode {
+  FIXED = 0,  // 0: Do not estimate extrinsic parameters, use fixed
+  APPROXIMATE =
+      1,  // 1: Extrinsic parameters already roughly estimated, refine only
+  INITIALIZE = 2  // 2: Estimate from scratch using motion
+};
 
 struct ImuOptions {
-  double ACC_N = 0.0, ACC_W = 0.0;
-  double GYR_N = 0.0, GYR_W = 0.0;
-  Eigen::Vector3d G{0.0, 0.0, 9.8};
-  std::string IMU_TOPIC;
-  int USE_IMU = 0;
-  double BIAS_ACC_THRESHOLD = 0.1;
-  double BIAS_GYR_THRESHOLD = 0.1;
-  bool hasImu() const { return USE_IMU; }
-  std::string imuTopic() const { return IMU_TOPIC; }
+  double accelNoiseDensity = 0.0, accelRandomWalk = 0.0;
+  double gyroNoiseDensity = 0.0, gyroRandomWalk = 0.0;
+  Eigen::Vector3d gravityVector{0.0, 0.0, 9.8};
+  std::string imu_topic;
+  int useImu = 0;
+  bool hasImu() const { return useImu; }
+  std::string imuTopic() const { return imu_topic; }
+  Eigen::Vector3d gravity() const { return gravityVector; }
+  Eigen::Vector3d& gravity() { return gravityVector; }
 };
 
 struct VINSOptions {
-  // 参数
   ImuOptions imu;
-  double INIT_DEPTH = 5.0;
-  double MIN_PARALLAX = 0.0;
+  double init_estimated_depth = 5.0;
+  double min_parllaax_num = 0.0;
 
   std::vector<Eigen::Matrix3d> RIC;
   std::vector<Eigen::Vector3d> TIC;
@@ -46,34 +55,28 @@ struct VINSOptions {
   int USE_GPU = 0;
   int USE_GPU_ACC_FLOW = 0;
   int USE_GPU_CERES = 0;
-
-  double SOLVER_TIME = 0.0;
-  int NUM_ITERATIONS = 0;
-  int ESTIMATE_EXTRINSIC = 0;
-  int ESTIMATE_TD = 0;
-  int ROLLING_SHUTTER = 0;
-
   std::string EX_CALIB_RESULT_PATH;
   std::string VINS_RESULT_PATH;
   std::string OUTPUT_FOLDER;
+  //////////////////////////////////////////////////////////////////////////////
+  double solver_time = 0.0;
+  int max_iterations = 0;
+  ExtrinsicEstimationMode extrinsic_estimation_mode =
+      ExtrinsicEstimationMode::FIXED;
+  int estimate_td_mode = 0;
 
-  int ROW = 0, COL = 0;
-  double TD = 0.0;
+  double time_delay = 0.0;
+  int num_of_camera = 0;
+  int stereo = 0;
+  std::string image0_topic, image1_topic;
+  std::vector<std::string> camera_names;
 
-  int NUM_OF_CAM = 0;
-  int STEREO = 0;
-
-  std::map<int, Eigen::Vector3d> pts_gt;
-
-  std::string IMAGE0_TOPIC, IMAGE1_TOPIC;
-  std::string FISHEYE_MASK;
-  std::vector<std::string> CAM_NAMES;
-
-  int MAX_CNT = 0;
-  int MIN_DIST = 0;
-  double F_THRESHOLD = 0.0;
-  int SHOW_TRACK = 0;
-  int FLOW_BACK = 0;
+  int max_feature_count = 0;
+  int min_feature_distance = 0;
+  double ransac_reproj_threshold = 0.0;
+  int show_track = 0;
+  int enable_reverse_optical_flow_check = 0;
+  ///////////////////////////////////////////////////////////////////////////
 
   // 读取参数函数
   void readParameters(const std::string& config_file) {
@@ -83,34 +86,33 @@ struct VINSOptions {
       return;
     }
 
-    fsSettings["image0_topic"] >> this->IMAGE0_TOPIC;
-    fsSettings["image1_topic"] >> this->IMAGE1_TOPIC;
-    this->MAX_CNT = (int)fsSettings["max_cnt"];
-    this->MIN_DIST = (int)fsSettings["min_dist"];
-    this->F_THRESHOLD = (double)fsSettings["F_threshold"];
-    this->SHOW_TRACK = (int)fsSettings["show_track"];
-    this->FLOW_BACK = (int)fsSettings["flow_back"];
+    fsSettings["image0_topic"] >> this->image0_topic;
+    fsSettings["image1_topic"] >> this->image1_topic;
+    this->max_feature_count = (int)fsSettings["max_cnt"];
+    this->min_feature_distance = (int)fsSettings["min_dist"];
+    this->ransac_reproj_threshold = (double)fsSettings["F_threshold"];
+    this->show_track = (int)fsSettings["show_track"];
+    this->enable_reverse_optical_flow_check = (int)fsSettings["flow_back"];
 
     this->USE_GPU = (int)fsSettings["use_gpu"];
     this->USE_GPU_ACC_FLOW = (int)fsSettings["use_gpu_acc_flow"];
     this->USE_GPU_CERES = (int)fsSettings["use_gpu_ceres"];
 
-    this->imu.USE_IMU = (int)fsSettings["imu"];
+    this->imu.useImu = (int)fsSettings["imu"];
     VINS_INFO << "USE_IMU: " << this->hasImu() << std::endl;
     if (this->hasImu()) {
-      fsSettings["imu_topic"] >> this->imu.IMU_TOPIC;
-      this->imu.ACC_N = (double)fsSettings["acc_n"];
-      this->imu.ACC_W = (double)fsSettings["acc_w"];
-      this->imu.GYR_N = (double)fsSettings["gyr_n"];
-      this->imu.GYR_W = (double)fsSettings["gyr_w"];
-      this->imu.G.z() = (double)fsSettings["g_norm"];
+      fsSettings["imu_topic"] >> this->imu.imu_topic;
+      this->imu.accelNoiseDensity = (double)fsSettings["acc_n"];
+      this->imu.accelRandomWalk = (double)fsSettings["acc_w"];
+      this->imu.gyroNoiseDensity = (double)fsSettings["gyr_n"];
+      this->imu.gyroRandomWalk = (double)fsSettings["gyr_w"];
+      this->imu.gravity().z() = (double)fsSettings["g_norm"];
     }
 
-    this->SOLVER_TIME = (double)fsSettings["max_solver_time"];
-    this->NUM_ITERATIONS = (int)fsSettings["max_num_iterations"];
-    this->MIN_PARALLAX = (double)fsSettings["keyframe_parallax"];
-    const double FOCAL_LENGTH = 460.0;
-    this->MIN_PARALLAX = this->MIN_PARALLAX / FOCAL_LENGTH;
+    this->solver_time = (double)fsSettings["max_solver_time"];
+    this->max_iterations = (int)fsSettings["max_num_iterations"];
+    this->min_parllaax_num = (double)fsSettings["keyframe_parallax"];
+    this->min_parllaax_num = this->min_parllaax_num / FOCAL_LENGTH;
 
     fsSettings["output_path"] >> this->OUTPUT_FOLDER;
     this->VINS_RESULT_PATH = this->OUTPUT_FOLDER + "/vio.csv";
@@ -118,14 +120,15 @@ struct VINSOptions {
     std::ofstream fout(this->VINS_RESULT_PATH, std::ios::out);
     fout.close();
 
-    this->ESTIMATE_EXTRINSIC = (int)fsSettings["estimate_extrinsic"];
-    if (this->ESTIMATE_EXTRINSIC == 2) {
+    this->extrinsic_estimation_mode = static_cast<ExtrinsicEstimationMode>(
+        (int)fsSettings["estimate_extrinsic"]);
+    if (isInitializingExtrinsic()) {
       this->RIC.push_back(Eigen::Matrix3d::Identity());
       this->TIC.push_back(Eigen::Vector3d::Zero());
       this->EX_CALIB_RESULT_PATH =
           this->OUTPUT_FOLDER + "/extrinsic_parameter.csv";
     } else {
-      if (this->ESTIMATE_EXTRINSIC == 1) {
+      if (isExtrinsicEstimationApproximate()) {
         this->EX_CALIB_RESULT_PATH =
             this->OUTPUT_FOLDER + "/extrinsic_parameter.csv";
       }
@@ -137,8 +140,8 @@ struct VINSOptions {
       this->TIC.push_back(T.block<3, 1>(0, 3));
     }
 
-    this->NUM_OF_CAM = (int)fsSettings["num_of_cam"];
-    if (this->NUM_OF_CAM != 1 && this->NUM_OF_CAM != 2) {
+    this->num_of_camera = (int)fsSettings["num_of_cam"];
+    if (this->num_of_camera != 1 && this->num_of_camera != 2) {
       VINS_ERROR << "num of cam should be 1 or 2 ";
     }
 
@@ -148,14 +151,14 @@ struct VINSOptions {
     std::string cam0Calib;
     fsSettings["cam0_calib"] >> cam0Calib;
     std::string cam0Path = configPath + "/" + cam0Calib;
-    this->CAM_NAMES.push_back(cam0Path);
+    this->camera_names.push_back(cam0Path);
 
-    if (this->NUM_OF_CAM == 2) {
-      this->STEREO = 1;
+    if (this->num_of_camera == 2) {
+      this->stereo = 1;
       std::string cam1Calib;
       fsSettings["cam1_calib"] >> cam1Calib;
       std::string cam1Path = configPath + "/" + cam1Calib;
-      this->CAM_NAMES.push_back(cam1Path);
+      this->camera_names.push_back(cam1Path);
 
       cv::Mat cv_T;
       fsSettings["body_T_cam1"] >> cv_T;
@@ -164,52 +167,46 @@ struct VINSOptions {
       this->RIC.push_back(T.block<3, 3>(0, 0));
       this->TIC.push_back(T.block<3, 1>(0, 3));
     }
-    VINS_INFO << "STEREO: " << this->STEREO;
+    VINS_INFO << "STEREO: " << this->stereo;
 
-    this->TD = (double)fsSettings["td"];
-    this->ESTIMATE_TD = (int)fsSettings["estimate_td"];
-
-    this->ROW = (int)fsSettings["image_height"];
-    this->COL = (int)fsSettings["image_width"];
+    this->time_delay = (double)fsSettings["td"];
+    this->estimate_td_mode = (int)fsSettings["estimate_td"];
     if (!this->hasImu()) {
-      this->ESTIMATE_EXTRINSIC = 0;
-      this->ESTIMATE_TD = 0;
+      this->extrinsic_estimation_mode = ExtrinsicEstimationMode::FIXED;
+      this->estimate_td_mode = 0;
     }
 
     fsSettings.release();
   }
 
   std::string imuTopic() const { return this->imu.imuTopic(); }
-  std::string imageTopic() const { return this->IMAGE0_TOPIC; }
-  std::string image1Topic() const { return this->IMAGE1_TOPIC; }
-
-  int max_num_iterations() const { return NUM_ITERATIONS; }
-
-  double max_solver_time() const { return SOLVER_TIME; }
-
+  std::string imageTopic() const { return this->image0_topic; }
+  std::string image1Topic() const { return this->image1_topic; }
+  int max_num_iterations() const { return max_iterations; }
+  double max_solver_time() const { return solver_time; }
   /// @brief Get the number of cameras in the current configuration
-  int getNumCameras() const { return NUM_OF_CAM; }
-
+  int getNumCameras() const { return num_of_camera; }
   /// @brief Check whether the system is configured for stereo camera input
-  bool isUsingStereo() const { return STEREO; }
+  bool isUsingStereo() const { return stereo; }
   /// @brief Check whether the current configuration uses IMU
   bool hasImu() const { return imu.hasImu(); }
   /// @brief Check if the configuration is monocular without IMU
   bool isMonoWithoutImu() const { return !isUsingStereo() && !hasImu(); }
-
   /// @brief Check if the configuration is monocular with IMU
   bool isMonoWithImu() const { return !isUsingStereo() && hasImu(); }
-
   /// @brief Check if the configuration is stereo without IMU
   bool isStereoWithoutImu() const { return isUsingStereo() && !hasImu(); }
-
   /// @brief Check if the configuration is stereo with IMU
   bool isStereoWithImu() const { return isUsingStereo() && hasImu(); }
+  bool shouldShowTrack() const { return show_track; }
+  bool isExtrinsicEstimationApproximate() const {
+    return extrinsic_estimation_mode == ExtrinsicEstimationMode::APPROXIMATE;
+  }
+  bool isInitializingExtrinsic() const {
+    return extrinsic_estimation_mode == ExtrinsicEstimationMode::INITIALIZE;
+  }
+  bool shouldEstimateTD() const { return estimate_td_mode; }
 };
-
-const double FOCAL_LENGTH = 460.0;
-const int WINDOW_SIZE = 10;
-const int NUM_OF_F = 1000;
 
 enum SIZE_PARAMETERIZATION {
   SIZE_POSE = 7,

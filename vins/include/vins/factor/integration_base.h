@@ -12,6 +12,7 @@
 #include <ceres/ceres.h>
 #include <vins/common/sensor_data_type.h>
 #include <vins/estimator/parameters.h>
+#include <vins/logger/logger.h>
 #include <vins/utility/utility.h>
 using namespace Eigen;
 
@@ -37,17 +38,23 @@ class IntegrationBase : public std::enable_shared_from_this<IntegrationBase> {
   {
     noise = Eigen::Matrix<double, 18, 18>::Zero();
     noise.block<3, 3>(0, 0) =
-        (imu_options.ACC_N * imu_options.ACC_N) * Eigen::Matrix3d::Identity();
+        (imu_options.accelNoiseDensity * imu_options.accelNoiseDensity) *
+        Eigen::Matrix3d::Identity();
     noise.block<3, 3>(3, 3) =
-        (imu_options.GYR_N * imu_options.GYR_N) * Eigen::Matrix3d::Identity();
+        (imu_options.gyroNoiseDensity * imu_options.gyroNoiseDensity) *
+        Eigen::Matrix3d::Identity();
     noise.block<3, 3>(6, 6) =
-        (imu_options.ACC_N * imu_options.ACC_N) * Eigen::Matrix3d::Identity();
+        (imu_options.accelNoiseDensity * imu_options.accelNoiseDensity) *
+        Eigen::Matrix3d::Identity();
     noise.block<3, 3>(9, 9) =
-        (imu_options.GYR_N * imu_options.GYR_N) * Eigen::Matrix3d::Identity();
+        (imu_options.gyroNoiseDensity * imu_options.gyroNoiseDensity) *
+        Eigen::Matrix3d::Identity();
     noise.block<3, 3>(12, 12) =
-        (imu_options.ACC_W * imu_options.ACC_W) * Eigen::Matrix3d::Identity();
+        (imu_options.accelRandomWalk * imu_options.accelRandomWalk) *
+        Eigen::Matrix3d::Identity();
     noise.block<3, 3>(15, 15) =
-        (imu_options.GYR_W * imu_options.GYR_W) * Eigen::Matrix3d::Identity();
+        (imu_options.gyroRandomWalk * imu_options.gyroRandomWalk) *
+        Eigen::Matrix3d::Identity();
   }
 
   ImuOptions getImuOptions() const { return imu_options; }
@@ -163,6 +170,11 @@ class IntegrationBase : public std::enable_shared_from_this<IntegrationBase> {
   }
 
   void propagate(const IMUData &data) {
+    if (data.timestamp > 1.0) {
+      VINS_ERROR << "Abnormal IMU timestamp jump detected: " << data.timestamp;
+      last_imu = data;
+      return;
+    }
     current_imu = data;
     Vector3d result_delta_p;
     Quaterniond result_delta_q;
@@ -212,13 +224,14 @@ class IntegrationBase : public std::enable_shared_from_this<IntegrationBase> {
     Eigen::Vector3d corrected_delta_p = delta_p + dp_dba * dba + dp_dbg * dbg;
 
     residuals.block<3, 1>(O_P, 0) =
-        Qi.inverse() *
-            (0.5 * imu_options.G * sum_dt * sum_dt + Pj - Pi - Vi * sum_dt) -
+        Qi.inverse() * (0.5 * imu_options.gravity() * sum_dt * sum_dt + Pj -
+                        Pi - Vi * sum_dt) -
         corrected_delta_p;
     residuals.block<3, 1>(O_R, 0) =
         2 * (corrected_delta_q.inverse() * (Qi.inverse() * Qj)).vec();
     residuals.block<3, 1>(O_V, 0) =
-        Qi.inverse() * (imu_options.G * sum_dt + Vj - Vi) - corrected_delta_v;
+        Qi.inverse() * (imu_options.gravity() * sum_dt + Vj - Vi) -
+        corrected_delta_v;
     residuals.block<3, 1>(O_BA, 0) = Baj - Bai;
     residuals.block<3, 1>(O_BG, 0) = Bgj - Bgi;
     return residuals;

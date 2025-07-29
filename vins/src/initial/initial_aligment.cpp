@@ -64,7 +64,7 @@ MatrixXd TangentBasis(Vector3d &g0) {
 
 void RefineGravity(map<double, ImageFrame> &all_image_frame, Vector3d &g,
                    VectorXd &x, const VINSOptions &options) {
-  Vector3d g0 = g.normalized() * options.imu.G.norm();
+  Vector3d g0 = g.normalized() * options.imu.gravity().norm();
   Vector3d lx, ly;
   // VectorXd x;
   int all_frame_count = all_image_frame.size();
@@ -132,7 +132,7 @@ void RefineGravity(map<double, ImageFrame> &all_image_frame, Vector3d &g,
     b = b * 1000.0;
     x = A.ldlt().solve(b);
     VectorXd dg = x.segment<2>(n_state - 3);
-    g0 = (g0 + lxly * dg).normalized() * options.imu.G.norm();
+    g0 = (g0 + lxly * dg).normalized() * options.imu.gravity().norm();
     // double s = x(n_state - 1);
   }
   g = g0;
@@ -205,11 +205,11 @@ bool LinearAlignment(map<double, ImageFrame> &all_image_frame, Vector3d &g,
   VINS_DEBUG << "estimated scale: " << s;
   g = x.segment<3>(n_state - 4);
   VINS_DEBUG << " result g     " << g.norm() << " " << g.transpose();
-  if (fabs(g.norm() - options.imu.G.norm()) > 0.5 || s < 0) {
+  if (fabs(g.norm() - options.imu.gravity().norm()) > 0.5 || s < 0) {
     return false;
   }
 
-  VINS_DEBUG << "gravity:\r\n " << options.imu.G << "\r\n g: " << g
+  VINS_DEBUG << "gravity:\r\n " << options.imu.gravity() << "\r\n g: " << g
              << "\r\n s: " << s;
   RefineGravity(all_image_frame, g, x, options);
   VINS_DEBUG << " refine     " << g.norm() << " " << g.transpose();
