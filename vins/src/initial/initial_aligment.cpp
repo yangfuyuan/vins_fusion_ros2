@@ -63,8 +63,8 @@ MatrixXd TangentBasis(Vector3d &g0) {
 }
 
 void RefineGravity(map<double, ImageFrame> &all_image_frame, Vector3d &g,
-                   VectorXd &x) {
-  Vector3d g0 = g.normalized() * G.norm();
+                   VectorXd &x, const VINSOptions &options) {
+  Vector3d g0 = g.normalized() * options.imu.G.norm();
   Vector3d lx, ly;
   // VectorXd x;
   int all_frame_count = all_image_frame.size();
@@ -99,8 +99,8 @@ void RefineGravity(map<double, ImageFrame> &all_image_frame, Vector3d &g,
                                 (frame_j->second.T - frame_i->second.T) / 100.0;
       tmp_b.block<3, 1>(0, 0) =
           frame_j->second.pre_integration->delta_p +
-          frame_i->second.R.transpose() * frame_j->second.R * TIC[0] - TIC[0] -
-          frame_i->second.R.transpose() * dt * dt / 2 * g0;
+          frame_i->second.R.transpose() * frame_j->second.R * options.TIC[0] -
+          options.TIC[0] - frame_i->second.R.transpose() * dt * dt / 2 * g0;
 
       tmp_A.block<3, 3>(3, 0) = -Matrix3d::Identity();
       tmp_A.block<3, 3>(3, 3) =
@@ -132,14 +132,14 @@ void RefineGravity(map<double, ImageFrame> &all_image_frame, Vector3d &g,
     b = b * 1000.0;
     x = A.ldlt().solve(b);
     VectorXd dg = x.segment<2>(n_state - 3);
-    g0 = (g0 + lxly * dg).normalized() * G.norm();
+    g0 = (g0 + lxly * dg).normalized() * options.imu.G.norm();
     // double s = x(n_state - 1);
   }
   g = g0;
 }
 
 bool LinearAlignment(map<double, ImageFrame> &all_image_frame, Vector3d &g,
-                     VectorXd &x) {
+                     VectorXd &x, const VINSOptions &options) {
   int all_frame_count = all_image_frame.size();
   int n_state = all_frame_count * 3 + 3 + 1;
 
@@ -169,7 +169,8 @@ bool LinearAlignment(map<double, ImageFrame> &all_image_frame, Vector3d &g,
                               (frame_j->second.T - frame_i->second.T) / 100.0;
     tmp_b.block<3, 1>(0, 0) =
         frame_j->second.pre_integration->delta_p +
-        frame_i->second.R.transpose() * frame_j->second.R * TIC[0] - TIC[0];
+        frame_i->second.R.transpose() * frame_j->second.R * options.TIC[0] -
+        options.TIC[0];
     // cout << "delta_p   " <<
     // frame_j->second.pre_integration->delta_p.transpose() << endl;
     tmp_A.block<3, 3>(3, 0) = -Matrix3d::Identity();
@@ -204,12 +205,13 @@ bool LinearAlignment(map<double, ImageFrame> &all_image_frame, Vector3d &g,
   VINS_DEBUG << "estimated scale: " << s;
   g = x.segment<3>(n_state - 4);
   VINS_DEBUG << " result g     " << g.norm() << " " << g.transpose();
-  if (fabs(g.norm() - G.norm()) > 0.5 || s < 0) {
+  if (fabs(g.norm() - options.imu.G.norm()) > 0.5 || s < 0) {
     return false;
   }
 
-  VINS_DEBUG << "gravity:\r\n " << G << "\r\n g: " << g << "\r\n s: " << s;
-  RefineGravity(all_image_frame, g, x);
+  VINS_DEBUG << "gravity:\r\n " << options.imu.G << "\r\n g: " << g
+             << "\r\n s: " << s;
+  RefineGravity(all_image_frame, g, x, options);
   VINS_DEBUG << " refine     " << g.norm() << " " << g.transpose();
   s = (x.tail<1>())(0) / 100.0;
   (x.tail<1>())(0) = s;
@@ -217,8 +219,8 @@ bool LinearAlignment(map<double, ImageFrame> &all_image_frame, Vector3d &g,
 }
 
 bool VisualIMUAlignment(map<double, ImageFrame> &all_image_frame, Vector3d *Bgs,
-                        Vector3d &g, VectorXd &x) {
+                        Vector3d &g, VectorXd &x, const VINSOptions &options) {
   solveGyroscopeBias(all_image_frame, Bgs);
 
-  return LinearAlignment(all_image_frame, g, x);
+  return LinearAlignment(all_image_frame, g, x, options);
 }

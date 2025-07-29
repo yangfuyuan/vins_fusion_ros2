@@ -76,7 +76,7 @@ class FeatureManager {
  public:
   FeatureManager(Matrix3d _Rs[]);
 
-  void setRic(Matrix3d _ric[]);
+  void setOptions(std::shared_ptr<VINSOptions> options_);
   void clearState();
   int getFeatureCount();
   bool addFeatureCheckParallax(
@@ -114,6 +114,7 @@ class FeatureManager {
   double compensatedParallax2(const FeaturePerId &it_per_id, int frame_count);
   const Matrix3d *Rs;
   Matrix3d ric[2];
+  std::shared_ptr<VINSOptions> options;
 };
 
 #endif

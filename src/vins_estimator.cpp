@@ -2,6 +2,7 @@
 #include <vins_fusion_ros2/vins_estimator.h>
 
 VinsEstimator::VinsEstimator() : rclcpp::Node("vins_estimator") {
+  options = std::make_shared<VINSOptions>();
   estimator_ = std::make_shared<Estimator>();
   tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
   initialize();
@@ -19,9 +20,8 @@ void VinsEstimator::initializeParamters() {
   world_frame_id = readParam<std::string>(this, "world_frame_id", "world");
   body_frame_id = readParam<std::string>(this, "body_frame_id", "body");
   camera_frame_id = readParam<std::string>(this, "camera_frame_id", "camera");
-
-  readParameters(config_file);
-  estimator_->setParameter();
+  options->readParameters(config_file);
+  estimator_->initialize(options);
 }
 void VinsEstimator::initializeSubscribers() {
   imu_callback_group_ =
@@ -40,9 +40,9 @@ void VinsEstimator::initializeSubscribers() {
   rclcpp::SubscriptionOptions sub_opt_feature;
   sub_opt_feature.callback_group = feature_callback_group_;
 
-  if (USE_IMU) {
+  if (options->hasImu()) {
     auto imu = this->create_subscription<sensor_msgs::msg::Imu>(
-        IMU_TOPIC, rclcpp::QoS(rclcpp::KeepLast(100)),
+        options->imuTopic(), rclcpp::QoS(rclcpp::KeepLast(100)),
         [this](const sensor_msgs::msg::Imu::SharedPtr msg) {
           auto imu_msg = fromMsg(*msg);
           estimator_->inputIMU(imu_msg);
@@ -51,12 +51,14 @@ void VinsEstimator::initializeSubscribers() {
     subs_.push_back(imu);
   }
 
-  if (STEREO) {
+  if (options->isUsingStereo()) {
     sub_img0_filter_ = std::make_shared<Subscriber<Image>>(
-        this, IMAGE0_TOPIC, rmw_qos_profile_sensor_data, sub_opt_image);
+        this, options->imageTopic(), rmw_qos_profile_sensor_data,
+        sub_opt_image);
 
     sub_img1_filter_ = std::make_shared<Subscriber<Image>>(
-        this, IMAGE1_TOPIC, rmw_qos_profile_sensor_data, sub_opt_image);
+        this, options->image1Topic(), rmw_qos_profile_sensor_data,
+        sub_opt_image);
 
     sync_img_ = std::make_shared<message_filters::Synchronizer<SyncPolicy>>(
         SyncPolicy(10), *sub_img0_filter_, *sub_img1_filter_);
@@ -66,7 +68,7 @@ void VinsEstimator::initializeSubscribers() {
                                           std::placeholders::_2));
   } else {
     auto sub_img0 = this->create_subscription<sensor_msgs::msg::Image>(
-        IMAGE0_TOPIC, rclcpp::QoS(rclcpp::KeepLast(100)),
+        options->imageTopic(), rclcpp::QoS(rclcpp::KeepLast(100)),
         [this](const sensor_msgs::msg::Image::SharedPtr msg) {
           ImageData image;
           image.image0 = fromMsg(*msg);

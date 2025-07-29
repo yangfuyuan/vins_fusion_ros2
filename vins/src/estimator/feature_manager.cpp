@@ -12,12 +12,13 @@
 #include <vins/logger/logger.h>
 
 FeatureManager::FeatureManager(Matrix3d _Rs[]) : Rs(_Rs) {
-  for (int i = 0; i < NUM_OF_CAM; i++) ric[i].setIdentity();
+  for (int i = 0; i < 2; i++) ric[i].setIdentity();
 }
 
-void FeatureManager::setRic(Matrix3d _ric[]) {
-  for (int i = 0; i < NUM_OF_CAM; i++) {
-    ric[i] = _ric[i];
+void FeatureManager::setOptions(std::shared_ptr<VINSOptions> options_) {
+  options = options_;
+  for (int i = 0; i < 2; i++) {
+    ric[i] = options->RIC[i];
   }
 }
 
@@ -85,7 +86,7 @@ bool FeatureManager::addFeatureCheckParallax(
     return true;
   } else {
     last_average_parallax = parallax_sum / parallax_num * FOCAL_LENGTH;
-    return parallax_sum / parallax_num >= MIN_PARALLAX;
+    return parallax_sum / parallax_num >= options->MIN_PARALLAX;
   }
 }
 
@@ -251,7 +252,7 @@ void FeatureManager::triangulate(int frameCnt, Vector3d Ps[], Matrix3d Rs[],
   for (auto &it_per_id : feature) {
     if (it_per_id.estimated_depth > 0) continue;
 
-    if (STEREO && it_per_id.feature_per_frame[0].is_stereo) {
+    if (options->isUsingStereo() && it_per_id.feature_per_frame[0].is_stereo) {
       int imu_i = it_per_id.start_frame;
       Eigen::Matrix<double, 3, 4> leftPose;
       Eigen::Vector3d t0 = Ps[imu_i] + Rs[imu_i] * tic[0];
@@ -276,7 +277,7 @@ void FeatureManager::triangulate(int frameCnt, Vector3d Ps[], Matrix3d Rs[],
       if (depth > 0)
         it_per_id.estimated_depth = depth;
       else
-        it_per_id.estimated_depth = INIT_DEPTH;
+        it_per_id.estimated_depth = options->INIT_DEPTH;
       continue;
     } else if (it_per_id.feature_per_frame.size() > 1) {
       int imu_i = it_per_id.start_frame;
@@ -304,7 +305,7 @@ void FeatureManager::triangulate(int frameCnt, Vector3d Ps[], Matrix3d Rs[],
       if (depth > 0)
         it_per_id.estimated_depth = depth;
       else
-        it_per_id.estimated_depth = INIT_DEPTH;
+        it_per_id.estimated_depth = options->INIT_DEPTH;
       continue;
     }
     it_per_id.used_num = it_per_id.feature_per_frame.size();
@@ -346,7 +347,7 @@ void FeatureManager::triangulate(int frameCnt, Vector3d Ps[], Matrix3d Rs[],
     it_per_id.estimated_depth = svd_method;
 
     if (it_per_id.estimated_depth < 0.1) {
-      it_per_id.estimated_depth = INIT_DEPTH;
+      it_per_id.estimated_depth = options->INIT_DEPTH;
     }
   }
 }
@@ -388,7 +389,7 @@ void FeatureManager::removeBackShiftDepth(Eigen::Matrix3d marg_R,
         if (dep_j > 0)
           it->estimated_depth = dep_j;
         else
-          it->estimated_depth = INIT_DEPTH;
+          it->estimated_depth = options->INIT_DEPTH;
       }
     }
   }

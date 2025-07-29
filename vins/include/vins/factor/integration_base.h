@@ -20,11 +20,13 @@ class IntegrationBase : public std::enable_shared_from_this<IntegrationBase> {
   using Ptr = std::shared_ptr<IntegrationBase>;
   IntegrationBase() = delete;
   IntegrationBase(const IMUData &last, const Eigen::Vector3d &_linearized_ba,
-                  const Eigen::Vector3d &_linearized_bg)
+                  const Eigen::Vector3d &_linearized_bg,
+                  const ImuOptions &options)
       : last_imu(last),
         linearized_imu(last_imu),
         linearized_ba{_linearized_ba},
         linearized_bg{_linearized_bg},
+        imu_options(options),
         jacobian{Eigen::Matrix<double, 15, 15>::Identity()},
         covariance{Eigen::Matrix<double, 15, 15>::Zero()},
         sum_dt{0.0},
@@ -34,13 +36,21 @@ class IntegrationBase : public std::enable_shared_from_this<IntegrationBase> {
 
   {
     noise = Eigen::Matrix<double, 18, 18>::Zero();
-    noise.block<3, 3>(0, 0) = (ACC_N * ACC_N) * Eigen::Matrix3d::Identity();
-    noise.block<3, 3>(3, 3) = (GYR_N * GYR_N) * Eigen::Matrix3d::Identity();
-    noise.block<3, 3>(6, 6) = (ACC_N * ACC_N) * Eigen::Matrix3d::Identity();
-    noise.block<3, 3>(9, 9) = (GYR_N * GYR_N) * Eigen::Matrix3d::Identity();
-    noise.block<3, 3>(12, 12) = (ACC_W * ACC_W) * Eigen::Matrix3d::Identity();
-    noise.block<3, 3>(15, 15) = (GYR_W * GYR_W) * Eigen::Matrix3d::Identity();
+    noise.block<3, 3>(0, 0) =
+        (imu_options.ACC_N * imu_options.ACC_N) * Eigen::Matrix3d::Identity();
+    noise.block<3, 3>(3, 3) =
+        (imu_options.GYR_N * imu_options.GYR_N) * Eigen::Matrix3d::Identity();
+    noise.block<3, 3>(6, 6) =
+        (imu_options.ACC_N * imu_options.ACC_N) * Eigen::Matrix3d::Identity();
+    noise.block<3, 3>(9, 9) =
+        (imu_options.GYR_N * imu_options.GYR_N) * Eigen::Matrix3d::Identity();
+    noise.block<3, 3>(12, 12) =
+        (imu_options.ACC_W * imu_options.ACC_W) * Eigen::Matrix3d::Identity();
+    noise.block<3, 3>(15, 15) =
+        (imu_options.GYR_W * imu_options.GYR_W) * Eigen::Matrix3d::Identity();
   }
+
+  ImuOptions getImuOptions() const { return imu_options; }
 
   void push_back(const IMUData &data) {
     imu_buffer.push_back(data);
@@ -202,12 +212,13 @@ class IntegrationBase : public std::enable_shared_from_this<IntegrationBase> {
     Eigen::Vector3d corrected_delta_p = delta_p + dp_dba * dba + dp_dbg * dbg;
 
     residuals.block<3, 1>(O_P, 0) =
-        Qi.inverse() * (0.5 * G * sum_dt * sum_dt + Pj - Pi - Vi * sum_dt) -
+        Qi.inverse() *
+            (0.5 * imu_options.G * sum_dt * sum_dt + Pj - Pi - Vi * sum_dt) -
         corrected_delta_p;
     residuals.block<3, 1>(O_R, 0) =
         2 * (corrected_delta_q.inverse() * (Qi.inverse() * Qj)).vec();
     residuals.block<3, 1>(O_V, 0) =
-        Qi.inverse() * (G * sum_dt + Vj - Vi) - corrected_delta_v;
+        Qi.inverse() * (imu_options.G * sum_dt + Vj - Vi) - corrected_delta_v;
     residuals.block<3, 1>(O_BA, 0) = Baj - Bai;
     residuals.block<3, 1>(O_BG, 0) = Bgj - Bgi;
     return residuals;
@@ -229,4 +240,5 @@ class IntegrationBase : public std::enable_shared_from_this<IntegrationBase> {
   Eigen::Quaterniond delta_q;
   Eigen::Vector3d delta_v;
   std::vector<IMUData> imu_buffer;
+  ImuOptions imu_options;
 };

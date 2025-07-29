@@ -44,9 +44,7 @@ class Estimator {
   Estimator();
   ~Estimator();
   //
-  void setParameter();
-  void changeSensorType(int use_imu, int use_stereo);
-
+  void initialize(std::shared_ptr<VINSOptions> options_);
   // interface
   void inputIMU(const IMUData &imu);
   void inputFeature(Timestamp timestamp, const FeatureFrame &featureFrame);
@@ -74,6 +72,7 @@ class Estimator {
   bool getkeyframePose(PoseData &data);
 
  private:
+  void initializeCamerasFromOptions();
   // 内部处理函数
   void processIMU(const IMUData &data, double deltaTime);
   void processImage(const FeatureFrame &features, Timestamp timestamp);
@@ -223,4 +222,5 @@ class Estimator {
   IMUData latestImuData;
   bool isFirstPoseInitialized = false;
   std::atomic<bool> isRunning{false};
+  std::shared_ptr<VINSOptions> options;
 };

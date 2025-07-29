@@ -64,6 +64,7 @@ class VinsEstimator : public rclcpp::Node {
   std::string camera_frame_id;
 
   nav_msgs::msg::Path path;
+  std::shared_ptr<VINSOptions> options;
 };
 
 #endif  // VINS_ESTIMATOR_H

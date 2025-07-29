@@ -10,11 +10,7 @@
 
 #include <vins/estimator/estimator.h>
 
-Estimator::Estimator() : featureManager{rotations} {
-  resetState();
-  isRunning.store(true);
-  processThread = std::thread(&Estimator::processMeasurements, this);
-}
+Estimator::Estimator() : featureManager{rotations} {}
 
 Estimator::~Estimator() {
   if (isRunning.load()) {
@@ -56,7 +52,7 @@ void Estimator::resetState() {
     pre_integrations[i] = nullptr;
   }
 
-  for (int i = 0; i < NUM_OF_CAM; i++) {
+  for (int i = 0; i < options->getNumCameras(); i++) {
     cameraTranslation[i] = Vector3d::Zero();
     cameraRotation[i] = Matrix3d::Identity();
     updateCameraPose(i);
@@ -77,53 +73,34 @@ void Estimator::resetState() {
   VINS_INFO << "reset state successfully";
 }
 
-void Estimator::setParameter() {
+void Estimator::initialize(std::shared_ptr<VINSOptions> options_) {
   std::lock_guard<std::mutex> lock(processingMutex);
-  for (int i = 0; i < NUM_OF_CAM; i++) {
-    cameraTranslation[i] = TIC[i];
-    cameraRotation[i] = RIC[i];
+  options = options_;
+  initializeCamerasFromOptions();
+  isRunning.store(true);
+  processThread = std::thread(&Estimator::processMeasurements, this);
+}
+
+void Estimator::initializeCamerasFromOptions() {
+  for (int i = 0; i < options->getNumCameras(); i++) {
+    cameraTranslation[i] = options->TIC[i];
+    cameraRotation[i] = options->RIC[i];
     updateCameraPose(i);
     VINS_INFO << " exitrinsic cam[" << i << "]: \n"
               << cameraRotation[i] << "\n"
               << cameraTranslation[i].transpose();
   }
-  featureManager.setRic(cameraRotation);
+  featureManager.setOptions(options);
+  featureTracker.setOptions(options);
   ProjectionTwoFrameOneCamFactor::sqrt_info =
       FOCAL_LENGTH / 1.5 * Matrix2d::Identity();
   ProjectionTwoFrameTwoCamFactor::sqrt_info =
       FOCAL_LENGTH / 1.5 * Matrix2d::Identity();
   ProjectionOneFrameTwoCamFactor::sqrt_info =
       FOCAL_LENGTH / 1.5 * Matrix2d::Identity();
-  timeDelay = TD;
-  gravity = G;
-  featureTracker.readIntrinsicParameter(CAM_NAMES);
-}
-
-void Estimator::changeSensorType(int use_imu, int use_stereo) {
-  bool restart = false;
-  processingMutex.lock();
-  if (!use_imu && !use_stereo)
-    VINS_ERROR << "at least use two sensors! ";
-  else {
-    if (USE_IMU != use_imu) {
-      USE_IMU = use_imu;
-      if (USE_IMU) {
-        restart = true;
-      } else {
-        tmp_pre_integration = nullptr;
-        last_marginalization_info = nullptr;
-        last_marginalization_parameter_blocks.clear();
-      }
-    }
-
-    STEREO = use_stereo;
-    VINS_INFO << "use imu: " << USE_IMU << " use stereo: " << STEREO;
-  }
-  processingMutex.unlock();
-  if (restart) {
-    resetState();
-    setParameter();
-  }
+  timeDelay = options->TD;
+  gravity = options->imu.G;
+  featureTracker.readIntrinsicParameter(options->CAM_NAMES);
 }
 
 void Estimator::inputImage(const ImageData &image) {
@@ -137,7 +114,7 @@ void Estimator::inputImage(const ImageData &image) {
     featureFrame =
         featureTracker.trackImage(image.timestamp, image.image0, image.image1);
   }
-  if (SHOW_TRACK) {
+  if (options->SHOW_TRACK) {
     track_image.image0 = featureTracker.getTrackImage();
     track_image.timestamp = image.timestamp;
     safe_track_image.set(track_image);
@@ -229,7 +206,7 @@ void Estimator::processMeasurements() {
       }
     }
 
-    if (USE_IMU) {
+    if (options->hasImu()) {
       getIMUInterval(previousTimestamp, currentTimestamp, imu_datas);
       if (!isFirstPoseInitialized) initFirstIMUPose(imu_datas);
       for (size_t i = 0; i < imu_datas.size(); i++) {
@@ -372,7 +349,7 @@ void Estimator::processIMU(const IMUData &data, double deltaTime) {
   if (!pre_integrations[frameCount]) {
     pre_integrations[frameCount] = std::make_shared<IntegrationBase>(
         previousImuData, accelerometerBiases[frameCount],
-        gyroscopeBiases[frameCount]);
+        gyroscopeBiases[frameCount], options->imu);
   }
   if (frameCount != 0) {
     IMUData delta_imu = data;
@@ -416,9 +393,9 @@ void Estimator::processImage(const FeatureFrame &features,
   all_image_frame.insert(make_pair(timestamp, imageframe));
   tmp_pre_integration = std::make_shared<IntegrationBase>(
       previousImuData, accelerometerBiases[frameCount],
-      gyroscopeBiases[frameCount]);
+      gyroscopeBiases[frameCount], options->imu);
 
-  if (ESTIMATE_EXTRINSIC == 2) {
+  if (options->ESTIMATE_EXTRINSIC == 2) {
     if (frameCount != 0) {
       vector<pair<Vector3d, Vector3d>> corres =
           featureManager.getCorresponding(frameCount - 1, frameCount);
@@ -426,18 +403,19 @@ void Estimator::processImage(const FeatureFrame &features,
       if (initial_ex_rotation.CalibrationExRotation(
               corres, pre_integrations[frameCount]->delta_q, calib_ric)) {
         cameraRotation[0] = calib_ric;
-        RIC[0] = calib_ric;
-        ESTIMATE_EXTRINSIC = 1;
+        options->RIC[0] = calib_ric;
+        options->ESTIMATE_EXTRINSIC = 1;
       }
     }
   }
 
   if (solver_flag == SolverState::INITIAL) {
     // monocular + IMU initilization
-    if (!STEREO && USE_IMU) {
+    if (options->isMonoWithImu()) {
       if (frameCount == WINDOW_SIZE) {
         bool result = false;
-        if (ESTIMATE_EXTRINSIC != 2 && (timestamp - initialTimestamp) > 0.1) {
+        if (options->ESTIMATE_EXTRINSIC != 2 &&
+            (timestamp - initialTimestamp) > 0.1) {
           result = initialStructure();
           initialTimestamp = timestamp;
         }
@@ -454,7 +432,7 @@ void Estimator::processImage(const FeatureFrame &features,
     }
 
     // stereo + IMU initilization
-    if (STEREO && USE_IMU) {
+    if (options->isStereoWithImu()) {
       featureManager.initFramePoseByPnP(frameCount, positions, rotations,
                                         cameraTranslation, cameraRotation);
       featureManager.triangulate(frameCount, positions, rotations,
@@ -482,7 +460,7 @@ void Estimator::processImage(const FeatureFrame &features,
     }
 
     // stereo only initilization
-    if (STEREO && !USE_IMU) {
+    if (options->isStereoWithoutImu()) {
       featureManager.initFramePoseByPnP(frameCount, positions, rotations,
                                         cameraTranslation, cameraRotation);
       featureManager.triangulate(frameCount, positions, rotations,
@@ -509,7 +487,7 @@ void Estimator::processImage(const FeatureFrame &features,
     }
 
   } else {
-    if (!USE_IMU) {
+    if (!options->hasImu()) {
       featureManager.initFramePoseByPnP(frameCount, positions, rotations,
                                         cameraTranslation, cameraRotation);
     }
@@ -525,7 +503,7 @@ void Estimator::processImage(const FeatureFrame &features,
     if (failureDetection()) {
       failure_occur = 1;
       resetState();
-      setParameter();
+      initializeCamerasFromOptions();
       return;
     }
 
@@ -622,7 +600,8 @@ bool Estimator::initialStructure() {
   for (int i = 0; frame_it != all_image_frame.end(); frame_it++) {
     if (frame_it->first == Headers[i]) {
       frame_it->second.is_key_frame = true;
-      frame_it->second.R = rotations[i].toRotationMatrix() * RIC[0].transpose();
+      frame_it->second.R =
+          rotations[i].toRotationMatrix() * options->RIC[0].transpose();
       frame_it->second.T = positions[i];
       i++;
       continue;
@@ -671,7 +650,7 @@ bool Estimator::initialStructure() {
     MatrixXd T_pnp;
     cv::cv2eigen(t, T_pnp);
     T_pnp = R_pnp * (-T_pnp);
-    frame_it->second.R = R_pnp * RIC[0].transpose();
+    frame_it->second.R = R_pnp * options->RIC[0].transpose();
     frame_it->second.T = T_pnp;
   }
 
@@ -682,8 +661,8 @@ bool Estimator::visualInitialAlign() {
   TicToc t_g;
   VectorXd x;
   // solve scale
-  bool result =
-      VisualIMUAlignment(all_image_frame, gyroscopeBiases, gravity, x);
+  bool result = VisualIMUAlignment(all_image_frame, gyroscopeBiases, gravity, x,
+                                   *options);
   if (!result) {
     VINS_DEBUG << "misalign visual structure with IMU";
     return false;
@@ -703,8 +682,8 @@ bool Estimator::visualInitialAlign() {
     pre_integrations[i]->repropagate(Vector3d::Zero(), gyroscopeBiases[i]);
   }
   for (int i = frameCount; i >= 0; i--)
-    positions[i] = s * positions[i] - rotations[i] * TIC[0] -
-                   (s * positions[0] - rotations[0] * TIC[0]);
+    positions[i] = s * positions[i] - rotations[i] * options->TIC[0] -
+                   (s * positions[0] - rotations[0] * options->TIC[0]);
   int kv = -1;
   map<double, ImageFrame>::iterator frame_i;
   for (frame_i = all_image_frame.begin(); frame_i != all_image_frame.end();
@@ -768,7 +747,7 @@ void Estimator::prepareParameters() {
     para_Pose[i][5] = q.z();
     para_Pose[i][6] = q.w();
 
-    if (USE_IMU) {
+    if (options->hasImu()) {
       para_SpeedBias[i][0] = velocities[i].x();
       para_SpeedBias[i][1] = velocities[i].y();
       para_SpeedBias[i][2] = velocities[i].z();
@@ -783,7 +762,7 @@ void Estimator::prepareParameters() {
     }
   }
 
-  for (int i = 0; i < NUM_OF_CAM; i++) {
+  for (int i = 0; i < options->getNumCameras(); i++) {
     para_Ex_Pose[i][0] = cameraTranslation[i].x();
     para_Ex_Pose[i][1] = cameraTranslation[i].y();
     para_Ex_Pose[i][2] = cameraTranslation[i].z();
@@ -811,7 +790,7 @@ void Estimator::updateEstimates() {
     failure_occur = 0;
   }
 
-  if (USE_IMU) {
+  if (options->hasImu()) {
     Vector3d origin_R00 =
         Utility::R2ypr(Quaterniond(para_Pose[0][6], para_Pose[0][3],
                                    para_Pose[0][4], para_Pose[0][5])
@@ -860,8 +839,8 @@ void Estimator::updateEstimates() {
     }
   }
 
-  if (USE_IMU) {
-    for (int i = 0; i < NUM_OF_CAM; i++) {
+  if (options->hasImu()) {
+    for (int i = 0; i < options->getNumCameras(); i++) {
       cameraTranslation[i] =
           Vector3d(para_Ex_Pose[i][0], para_Ex_Pose[i][1], para_Ex_Pose[i][2]);
       cameraRotation[i] = Quaterniond(para_Ex_Pose[i][6], para_Ex_Pose[i][3],
@@ -877,7 +856,7 @@ void Estimator::updateEstimates() {
     dep(i) = para_Feature[i][0];
   featureManager.setDepth(dep);
 
-  if (USE_IMU) timeDelay = para_Td[0][0];
+  if (options->hasImu()) timeDelay = para_Td[0][0];
 }
 
 bool Estimator::failureDetection() {
@@ -912,15 +891,16 @@ void Estimator::AddPoseParameterBlocks(ceres::Problem &problem) {
   for (int i = 0; i < frameCount + 1; i++) {
     auto *local_param = new PoseLocalParameterization();
     problem.AddParameterBlock(para_Pose[i], SIZE_POSE, local_param);
-    if (USE_IMU) problem.AddParameterBlock(para_SpeedBias[i], SIZE_SPEEDBIAS);
+    if (options->hasImu())
+      problem.AddParameterBlock(para_SpeedBias[i], SIZE_SPEEDBIAS);
   }
-  if (!USE_IMU) problem.SetParameterBlockConstant(para_Pose[0]);
+  if (!options->hasImu()) problem.SetParameterBlockConstant(para_Pose[0]);
 }
 void Estimator::AddExtrinsicParameterBlocks(ceres::Problem &problem) {
-  for (int i = 0; i < NUM_OF_CAM; i++) {
+  for (int i = 0; i < options->getNumCameras(); i++) {
     auto *local_param = new PoseLocalParameterization();
     problem.AddParameterBlock(para_Ex_Pose[i], SIZE_POSE, local_param);
-    if ((ESTIMATE_EXTRINSIC && frameCount == WINDOW_SIZE &&
+    if ((options->ESTIMATE_EXTRINSIC && frameCount == WINDOW_SIZE &&
          velocities[0].norm() > 0.2) ||
         openExEstimation) {
       openExEstimation = 1;
@@ -931,7 +911,7 @@ void Estimator::AddExtrinsicParameterBlocks(ceres::Problem &problem) {
 }
 void Estimator::AddTimeDelayParameterBlock(ceres::Problem &problem) {
   problem.AddParameterBlock(para_Td[0], 1);
-  if (!ESTIMATE_TD || velocities[0].norm() < 0.2)
+  if (!options->ESTIMATE_TD || velocities[0].norm() < 0.2)
     problem.SetParameterBlockConstant(para_Td[0]);
 }
 void Estimator::AddMarginalizationFactor(ceres::Problem &problem) {
@@ -943,7 +923,7 @@ void Estimator::AddMarginalizationFactor(ceres::Problem &problem) {
   }
 }
 void Estimator::AddIMUFactors(ceres::Problem &problem) {
-  if (!USE_IMU) return;
+  if (!options->hasImu()) return;
 
   for (int i = 0; i < frameCount; i++) {
     int j = i + 1;
@@ -976,7 +956,7 @@ void Estimator::AddFeatureFactors(ceres::Problem &problem) {
                                  para_Td[0]);
       }
 
-      if (STEREO && f.is_stereo) {
+      if (options->isUsingStereo() && f.is_stereo) {
         Vector3d pts_j_right = f.pointRight;
         if (imu_i != imu_j) {
           auto *factor = new ProjectionTwoFrameTwoCamFactor(
@@ -1008,18 +988,18 @@ void Estimator::solveOptimization() {
   AddIMUFactors(problem);
   AddFeatureFactors(problem);
 
-  ceres::Solver::Options options;
-  options.linear_solver_type =
-      USE_GPU_CERES ? ceres::DENSE_QR : ceres::DENSE_SCHUR;
-  options.trust_region_strategy_type = ceres::DOGLEG;
-  options.max_num_iterations = NUM_ITERATIONS;
-  options.max_solver_time_in_seconds =
+  ceres::Solver::Options ceres_options;
+  ceres_options.linear_solver_type =
+      options->USE_GPU_CERES ? ceres::DENSE_QR : ceres::DENSE_SCHUR;
+  ceres_options.trust_region_strategy_type = ceres::DOGLEG;
+  ceres_options.max_num_iterations = options->max_num_iterations();
+  ceres_options.max_solver_time_in_seconds =
       (marginalization_flag == MarginalizationType::MARGIN_OLD)
-          ? SOLVER_TIME * 0.8
-          : SOLVER_TIME;
+          ? options->max_solver_time() * 0.8
+          : options->max_solver_time();
 
   ceres::Solver::Summary summary;
-  ceres::Solve(options, &problem, &summary);
+  ceres::Solve(ceres_options, &problem, &summary);
 }
 
 void Estimator::processOldMarginalization() {
@@ -1046,7 +1026,7 @@ void Estimator::processOldMarginalization() {
   }
 
   // IMU
-  if (USE_IMU && pre_integrations[1]->sum_dt < 10.0) {
+  if (options->hasImu() && pre_integrations[1]->sum_dt < 10.0) {
     marginalization_info->addResidualBlockInfo(createIMUResidualBlock());
   }
 
@@ -1140,7 +1120,7 @@ void Estimator::addFeatureResidualBlocks(
             vector<int>{0, 3}));
       }
 
-      if (STEREO && it_per_frame.is_stereo) {
+      if (options->isUsingStereo() && it_per_frame.is_stereo) {
         const Vector3d &pts_j_right = it_per_frame.pointRight;
         auto loss = std::make_shared<ceres::HuberLoss>(1.0);
 
@@ -1178,19 +1158,19 @@ std::unordered_map<long, double *> Estimator::createAddrShift(bool is_old) {
 
     if (i == WINDOW_SIZE && !is_old) {
       addr_shift[reinterpret_cast<long>(para_Pose[i])] = para_Pose[i - 1];
-      if (USE_IMU)
+      if (options->hasImu())
         addr_shift[reinterpret_cast<long>(para_SpeedBias[i])] =
             para_SpeedBias[i - 1];
     } else {
       addr_shift[reinterpret_cast<long>(para_Pose[i])] =
           para_Pose[i - (is_old ? 1 : 0)];
-      if (USE_IMU)
+      if (options->hasImu())
         addr_shift[reinterpret_cast<long>(para_SpeedBias[i])] =
             para_SpeedBias[i - (is_old ? 1 : 0)];
     }
   }
 
-  for (int i = 0; i < NUM_OF_CAM; i++)
+  for (int i = 0; i < options->getNumCameras(); i++)
     addr_shift[reinterpret_cast<long>(para_Ex_Pose[i])] = para_Ex_Pose[i];
 
   addr_shift[reinterpret_cast<long>(para_Td[0])] = para_Td[0];
@@ -1204,6 +1184,7 @@ void Estimator::optimize() {
   updateEstimates();
 
   if (frameCount < WINDOW_SIZE) return;
+  // 根据边缘化标志选择不同的边缘化处理方式
   if (marginalization_flag == MarginalizationType::MARGIN_OLD) {
     processOldMarginalization();
   } else {
@@ -1222,7 +1203,7 @@ void Estimator::slideWindow() {
         Headers[i] = Headers[i + 1];
         rotations[i].swap(rotations[i + 1]);
         positions[i].swap(positions[i + 1]);
-        if (USE_IMU) {
+        if (options->hasImu()) {
           std::swap(pre_integrations[i], pre_integrations[i + 1]);
           deltaTimeImuBuffer[i].swap(deltaTimeImuBuffer[i + 1]);
 
@@ -1235,7 +1216,7 @@ void Estimator::slideWindow() {
       positions[WINDOW_SIZE] = positions[WINDOW_SIZE - 1];
       rotations[WINDOW_SIZE] = rotations[WINDOW_SIZE - 1];
 
-      if (USE_IMU) {
+      if (options->hasImu()) {
         velocities[WINDOW_SIZE] = velocities[WINDOW_SIZE - 1];
         accelerometerBiases[WINDOW_SIZE] = accelerometerBiases[WINDOW_SIZE - 1];
         gyroscopeBiases[WINDOW_SIZE] = gyroscopeBiases[WINDOW_SIZE - 1];
@@ -1243,8 +1224,7 @@ void Estimator::slideWindow() {
         pre_integrations[WINDOW_SIZE] = nullptr;
         pre_integrations[WINDOW_SIZE] = std::make_shared<IntegrationBase>(
             previousImuData, accelerometerBiases[WINDOW_SIZE],
-            gyroscopeBiases[WINDOW_SIZE]);
-
+            gyroscopeBiases[WINDOW_SIZE], options->imu);
         deltaTimeImuBuffer[WINDOW_SIZE].clear();
       }
 
@@ -1261,7 +1241,7 @@ void Estimator::slideWindow() {
       positions[frameCount - 1] = positions[frameCount];
       rotations[frameCount - 1] = rotations[frameCount];
 
-      if (USE_IMU) {
+      if (options->hasImu()) {
         for (unsigned int i = 0; i < deltaTimeImuBuffer[frameCount].size();
              i++) {
           const auto &imu = deltaTimeImuBuffer[frameCount][i];
@@ -1272,11 +1252,10 @@ void Estimator::slideWindow() {
         velocities[frameCount - 1] = velocities[frameCount];
         accelerometerBiases[frameCount - 1] = accelerometerBiases[frameCount];
         gyroscopeBiases[frameCount - 1] = gyroscopeBiases[frameCount];
-
         pre_integrations[WINDOW_SIZE] = nullptr;
         pre_integrations[WINDOW_SIZE] = std::make_shared<IntegrationBase>(
             previousImuData, accelerometerBiases[WINDOW_SIZE],
-            gyroscopeBiases[WINDOW_SIZE]);
+            gyroscopeBiases[WINDOW_SIZE], options->imu);
 
         deltaTimeImuBuffer[WINDOW_SIZE].clear();
       }
@@ -1433,7 +1412,6 @@ double Estimator::reprojectionError(Matrix3d &Ri, Vector3d &Pi, Matrix3d &rici,
 }
 
 void Estimator::outliersRejection(set<int> &removeIndex) {
-  // return;
   int feature_index = -1;
   for (auto &it_per_id : featureManager.feature) {
     double err = 0;
@@ -1456,7 +1434,7 @@ void Estimator::outliersRejection(set<int> &removeIndex) {
         errCnt++;
       }
       // need to rewrite projecton factor.........
-      if (STEREO && it_per_frame.is_stereo) {
+      if (options->isUsingStereo() && it_per_frame.is_stereo) {
         Vector3d pts_j_right = it_per_frame.pointRight;
         if (imu_i != imu_j) {
           double tmp_error = reprojectionError(
