@@ -77,13 +77,6 @@ struct VINSOptions {
 
   // 读取参数函数
   void readParameters(const std::string& config_file) {
-    FILE* fh = fopen(config_file.c_str(), "r");
-    if (fh == NULL) {
-      VINS_ERROR << "config_file doesn't exist; wrong config_file path";
-      return;
-    }
-    fclose(fh);
-
     cv::FileStorage fsSettings(config_file, cv::FileStorage::READ);
     if (!fsSettings.isOpened()) {
       VINS_ERROR << "Wrong path to settings";
