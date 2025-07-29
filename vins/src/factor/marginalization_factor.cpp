@@ -7,7 +7,9 @@
  * Licensed under the GNU General Public License v3.0;
  * you may not use this file except in compliance with the License.
  *******************************************************/
+#include <omp.h>
 #include <vins/factor/marginalization_factor.h>
+#include <vins/logger/logger.h>
 void ResidualBlockInfo::Evaluate() {
   residuals.resize(cost_function->num_residuals());
 
@@ -122,39 +124,6 @@ int MarginalizationInfo::globalSize(int size) const {
   return size == 6 ? 7 : size;
 }
 
-void *ThreadsConstructA(void *threadsstruct) {
-  ThreadsStruct *p = ((ThreadsStruct *)threadsstruct);
-  for (auto it : p->sub_factors) {
-    for (int i = 0; i < static_cast<int>(it->parameter_blocks.size()); i++) {
-      int idx_i = p->parameter_block_idx[reinterpret_cast<long>(
-          it->parameter_blocks[i])];
-      int size_i = p->parameter_block_size[reinterpret_cast<long>(
-          it->parameter_blocks[i])];
-      if (size_i == 7) size_i = 6;
-      Eigen::MatrixXd jacobian_i = it->jacobians[i].leftCols(size_i);
-      for (int j = i; j < static_cast<int>(it->parameter_blocks.size()); j++) {
-        int idx_j = p->parameter_block_idx[reinterpret_cast<long>(
-            it->parameter_blocks[j])];
-        int size_j = p->parameter_block_size[reinterpret_cast<long>(
-            it->parameter_blocks[j])];
-        if (size_j == 7) size_j = 6;
-        Eigen::MatrixXd jacobian_j = it->jacobians[j].leftCols(size_j);
-        if (i == j)
-          p->A.block(idx_i, idx_j, size_i, size_j) +=
-              jacobian_i.transpose() * jacobian_j;
-        else {
-          p->A.block(idx_i, idx_j, size_i, size_j) +=
-              jacobian_i.transpose() * jacobian_j;
-          p->A.block(idx_j, idx_i, size_j, size_i) =
-              p->A.block(idx_i, idx_j, size_i, size_j).transpose();
-        }
-      }
-      p->b.segment(idx_i, size_i) += jacobian_i.transpose() * it->residuals;
-    }
-  }
-  return threadsstruct;
-}
-
 void MarginalizationInfo::marginalize() {
   int pos = 0;
   for (auto &it : parameter_block_idx) {
@@ -172,89 +141,69 @@ void MarginalizationInfo::marginalize() {
   }
 
   n = pos - m;
-  // ROS_INFO("marginalization, pos: %d, m: %d, n: %d, size: %d", pos, m, n,
-  // (int)parameter_block_idx.size());
   if (m == 0) {
     valid = false;
-    printf("unstable tracking...\n");
+    VINS_WARN << "unstable tracking...";
     return;
   }
 
   TicToc t_summing;
-  Eigen::MatrixXd A(pos, pos);
-  Eigen::VectorXd b(pos);
-  A.setZero();
-  b.setZero();
-  /*
-  for (auto it : factors)
-  {
-      for (int i = 0; i < static_cast<int>(it->parameter_blocks.size()); i++)
-      {
-          int idx_i =
-  parameter_block_idx[reinterpret_cast<long>(it->parameter_blocks[i])]; int
-  size_i =
-  localSize(parameter_block_size[reinterpret_cast<long>(it->parameter_blocks[i])]);
-          Eigen::MatrixXd jacobian_i = it->jacobians[i].leftCols(size_i);
-          for (int j = i; j < static_cast<int>(it->parameter_blocks.size());
-  j++)
-          {
-              int idx_j =
-  parameter_block_idx[reinterpret_cast<long>(it->parameter_blocks[j])]; int
-  size_j =
-  localSize(parameter_block_size[reinterpret_cast<long>(it->parameter_blocks[j])]);
-              Eigen::MatrixXd jacobian_j = it->jacobians[j].leftCols(size_j);
-              if (i == j)
-                  A.block(idx_i, idx_j, size_i, size_j) +=
-  jacobian_i.transpose() * jacobian_j; else
-              {
-                  A.block(idx_i, idx_j, size_i, size_j) +=
-  jacobian_i.transpose() * jacobian_j; A.block(idx_j, idx_i, size_j, size_i) =
-  A.block(idx_i, idx_j, size_i, size_j).transpose();
-              }
-          }
-          b.segment(idx_i, size_i) += jacobian_i.transpose() * it->residuals;
-      }
-  }
-  ROS_INFO("summing up costs %f ms", t_summing.toc());
-  */
-  // multi thread
+  Eigen::MatrixXd A = Eigen::MatrixXd::Zero(pos, pos);
+  Eigen::VectorXd b = Eigen::VectorXd::Zero(pos);
 
-  TicToc t_thread_summing;
-  pthread_t tids[NUM_THREADS];
-  ThreadsStruct threadsstruct[NUM_THREADS];
-  int i = 0;
-  for (auto it : factors) {
-    threadsstruct[i].sub_factors.push_back(it);
-    i++;
-    i = i % NUM_THREADS;
-  }
-  for (int i = 0; i < NUM_THREADS; i++) {
-    TicToc zero_matrix;
-    threadsstruct[i].A = Eigen::MatrixXd::Zero(pos, pos);
-    threadsstruct[i].b = Eigen::VectorXd::Zero(pos);
-    threadsstruct[i].parameter_block_size = parameter_block_size;
-    threadsstruct[i].parameter_block_idx = parameter_block_idx;
-    int ret = pthread_create(&tids[i], NULL, ThreadsConstructA,
-                             (void *)&(threadsstruct[i]));
-    if (ret != 0) {
-      // ROS_BREAK();
+  // 为每个线程准备局部变量
+  std::vector<Eigen::MatrixXd> thread_As(NUM_THREADS,
+                                         Eigen::MatrixXd::Zero(pos, pos));
+  std::vector<Eigen::VectorXd> thread_bs(NUM_THREADS,
+                                         Eigen::VectorXd::Zero(pos));
+
+// OpenMP 并行遍历所有 factors
+#pragma omp parallel for num_threads(NUM_THREADS)
+  for (int t = 0; t < static_cast<int>(factors.size()); ++t) {
+    auto &it = factors[t];
+    int tid = omp_get_thread_num();
+
+    Eigen::MatrixXd &local_A = thread_As[tid];
+    Eigen::VectorXd &local_b = thread_bs[tid];
+
+    for (int i = 0; i < static_cast<int>(it->parameter_blocks.size()); i++) {
+      long key_i = reinterpret_cast<long>(it->parameter_blocks[i]);
+      int idx_i = parameter_block_idx[key_i];
+      int size_i = parameter_block_size[key_i];
+      if (size_i == 7) size_i = 6;
+
+      Eigen::MatrixXd jacobian_i = it->jacobians[i].leftCols(size_i);
+
+      for (int j = i; j < static_cast<int>(it->parameter_blocks.size()); j++) {
+        long key_j = reinterpret_cast<long>(it->parameter_blocks[j]);
+        int idx_j = parameter_block_idx[key_j];
+        int size_j = parameter_block_size[key_j];
+        if (size_j == 7) size_j = 6;
+
+        Eigen::MatrixXd jacobian_j = it->jacobians[j].leftCols(size_j);
+
+        Eigen::MatrixXd JtJ = jacobian_i.transpose() * jacobian_j;
+        if (i == j) {
+          local_A.block(idx_i, idx_j, size_i, size_j) += JtJ;
+        } else {
+          local_A.block(idx_i, idx_j, size_i, size_j) += JtJ;
+          local_A.block(idx_j, idx_i, size_j, size_i) += JtJ.transpose();
+        }
+      }
+      local_b.segment(idx_i, size_i) += jacobian_i.transpose() * it->residuals;
     }
   }
-  for (int i = NUM_THREADS - 1; i >= 0; i--) {
-    pthread_join(tids[i], NULL);
-    A += threadsstruct[i].A;
-    b += threadsstruct[i].b;
-  }
-  // ROS_DEBUG("thread summing up costs %f ms", t_thread_summing.toc());
-  // ROS_INFO("A diff %f , b diff %f ", (A - tmp_A).sum(), (b - tmp_b).sum());
 
-  // TODO
+  // 汇总所有线程结果
+  for (int i = 0; i < NUM_THREADS; ++i) {
+    A += thread_As[i];
+    b += thread_bs[i];
+  }
+
+  // 对称化主块
   Eigen::MatrixXd Amm =
       0.5 * (A.block(0, 0, m, m) + A.block(0, 0, m, m).transpose());
   Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> saes(Amm);
-
-  // ROS_ASSERT_MSG(saes.eigenvalues().minCoeff() >= -1e-4, "min eigenvalue %f",
-  // saes.eigenvalues().minCoeff());
 
   Eigen::MatrixXd Amm_inv =
       saes.eigenvectors() *
@@ -262,14 +211,13 @@ void MarginalizationInfo::marginalize() {
                           .select(saes.eigenvalues().array().inverse(), 0))
           .asDiagonal() *
       saes.eigenvectors().transpose();
-  // printf("error1: %f\n", (Amm * Amm_inv - Eigen::MatrixXd::Identity(m,
-  // m)).sum());
 
   Eigen::VectorXd bmm = b.segment(0, m);
   Eigen::MatrixXd Amr = A.block(0, m, m, n);
   Eigen::MatrixXd Arm = A.block(m, 0, n, m);
   Eigen::MatrixXd Arr = A.block(m, m, n, n);
   Eigen::VectorXd brr = b.segment(m, n);
+
   A = Arr - Arm * Amm_inv * Amr;
   b = brr - Arm * Amm_inv * bmm;
 

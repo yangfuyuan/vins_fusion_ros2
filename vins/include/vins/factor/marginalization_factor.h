@@ -15,7 +15,6 @@
 #include <vins/utility/tic_toc.h>
 #include <vins/utility/utility.h>
 
-#include <cstdlib>
 #include <unordered_map>
 
 const int NUM_THREADS = 4;
@@ -60,14 +59,6 @@ struct ResidualBlockInfo {
   int localSize(int size) { return size == 7 ? 6 : size; }
 };
 
-struct ThreadsStruct {
-  std::vector<std::shared_ptr<ResidualBlockInfo>> sub_factors;
-  Eigen::MatrixXd A;
-  Eigen::VectorXd b;
-  std::unordered_map<long, int> parameter_block_size;  // global size
-  std::unordered_map<long, int> parameter_block_idx;   // local size
-};
-
 class MarginalizationInfo
     : public std::enable_shared_from_this<MarginalizationInfo> {
  public:
@@ -108,5 +99,4 @@ class MarginalizationFactor : public ceres::CostFunction {
                         double **jacobians) const;
 
   std::weak_ptr<MarginalizationInfo> marginalization_info;
-  // MarginalizationInfo::Ptr marginalization_info;
 };

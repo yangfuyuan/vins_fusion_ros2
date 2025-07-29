@@ -9,6 +9,7 @@ endif()
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 find_package(Glog)
+find_package(OpenMP REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(Ceres REQUIRED)
 include_directories(${CERES_INCLUDE_DIRS})
@@ -28,6 +29,10 @@ file(GLOB_RECURSE HEADER_FILES "${CMAKE_CURRENT_SOURCE_DIR}/include/*.h" "${CMAK
 
 add_library(vins_lib ${SRC_FILES} ${HEADER_FILES})
 target_link_libraries(vins_lib  ${OpenCV_LIBS} ${CERES_LIBRARIES} ${GLOG_LIBRARIES})
+
+if(OpenMP_CXX_FOUND)
+   target_link_libraries(vins_lib OpenMP::OpenMP_CXX)
+endif()
 
 target_include_directories(vins_lib
   PUBLIC
