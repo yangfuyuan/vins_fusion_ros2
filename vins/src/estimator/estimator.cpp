@@ -351,178 +351,208 @@ void Estimator::processIMU(const IMUData &data, double deltaTime) {
     tmp_pre_integration->push_back(delta_imu);
     deltaTimeImuBuffer[frameCount].push_back(delta_imu);
 
-    int j = frameCount;
-    Vector3d un_acc_0 =
-        estimator_state[j].rotation * (previousImuData.linear_acceleration -
-                                       estimator_state[j].accel_bias) -
-        gravity;
-    Vector3d un_gyr =
-        0.5 * (previousImuData.angular_velocity + data.angular_velocity) -
-        estimator_state[j].gyro_bias;
-    estimator_state[j].rotation *=
-        Utility::deltaQ(un_gyr * deltaTime).toRotationMatrix();
-    Vector3d un_acc_1 =
-        estimator_state[j].rotation *
-            (data.linear_acceleration - estimator_state[j].accel_bias) -
-        gravity;
-    Vector3d un_acc = 0.5 * (un_acc_0 + un_acc_1);
-    estimator_state[j].position += deltaTime * estimator_state[j].velocity +
-                                   0.5 * deltaTime * deltaTime * un_acc;
-    estimator_state[j].velocity += deltaTime * un_acc;
+    updateStateWithIMU(data, deltaTime);
   }
   previousImuData = data;
 }
 
+void Estimator::updateStateWithIMU(const IMUData &data, double deltaTime) {
+  int j = frameCount;
+  Vector3d un_acc_0 =
+      estimator_state[j].rotation * (previousImuData.linear_acceleration -
+                                     estimator_state[j].accel_bias) -
+      gravity;
+  Vector3d un_gyr =
+      0.5 * (previousImuData.angular_velocity + data.angular_velocity) -
+      estimator_state[j].gyro_bias;
+  estimator_state[j].rotation *=
+      Utility::deltaQ(un_gyr * deltaTime).toRotationMatrix();
+  Vector3d un_acc_1 =
+      estimator_state[j].rotation *
+          (data.linear_acceleration - estimator_state[j].accel_bias) -
+      gravity;
+  Vector3d un_acc = 0.5 * (un_acc_0 + un_acc_1);
+  estimator_state[j].position += deltaTime * estimator_state[j].velocity +
+                                 0.5 * deltaTime * deltaTime * un_acc;
+  estimator_state[j].velocity += deltaTime * un_acc;
+}
+
 void Estimator::processImage(const FeatureFrame &features,
                              Timestamp timestamp) {
+  setMarginalizationFlag(features);
+  insertImageFrame(features, timestamp);
+  handleExtrinsicInitialization();
+  if (!isNonLinearSolver()) {
+    processInitialization(timestamp);
+  } else {
+    processNonLinearSolver(timestamp);
+  }
+}
+
+void Estimator::setMarginalizationFlag(const FeatureFrame &features) {
   if (featureManager.addFeatureCheckParallax(frameCount, features,
                                              options->time_delay)) {
     marginalization_flag = MarginalizationType::MARGIN_OLD;
   } else {
     marginalization_flag = MarginalizationType::MARGIN_SECOND_NEW;
   }
-
+}
+void Estimator::insertImageFrame(const FeatureFrame &features,
+                                 Timestamp timestamp) {
   estimator_state[frameCount].timestamp = timestamp;
-
   ImageFrame imageframe(features, timestamp);
   imageframe.pre_integration = std::move(tmp_pre_integration);
   all_image_frame.insert(make_pair(timestamp, imageframe));
   tmp_pre_integration = std::make_shared<IntegrationBase>(
       previousImuData, estimator_state[frameCount].accel_bias,
       estimator_state[frameCount].gyro_bias, options->imu);
+}
 
-  if (options->isInitializingExtrinsic()) {
-    if (frameCount != 0) {
-      vector<pair<Vector3d, Vector3d>> corres =
-          featureManager.getCorresponding(frameCount - 1, frameCount);
-      Matrix3d calib_ric;
-      if (initial_ex_rotation.CalibrationExRotation(
-              corres, pre_integrations[frameCount]->delta_q, calib_ric)) {
-        cameraRotation[0] = calib_ric;
-        options->RIC[0] = calib_ric;
-        options->extrinsic_estimation_mode =
-            ExtrinsicEstimationMode::APPROXIMATE;
-      }
-    }
+void Estimator::handleExtrinsicInitialization() {
+  if (!options->isInitializingExtrinsic() || frameCount == 0) {
+    return;
+  }
+  vector<pair<Vector3d, Vector3d>> corres =
+      featureManager.getCorresponding(frameCount - 1, frameCount);
+  Matrix3d calib_ric;
+  if (initial_ex_rotation.CalibrationExRotation(
+          corres, pre_integrations[frameCount]->delta_q, calib_ric)) {
+    cameraRotation[0] = calib_ric;
+    options->RIC[0] = calib_ric;
+    options->extrinsic_estimation_mode = ExtrinsicEstimationMode::APPROXIMATE;
+  }
+}
+
+void Estimator::processInitialization(Timestamp timestamp) {
+  if (options->isMonoWithImu()) {
+    processMonoWithImuInitialization(timestamp);
+  }
+  if (options->isStereoWithImu()) {
+    processStereoWithImuInitialization();
+  }
+  if (options->isStereoWithoutImu()) {
+    processStereoWithoutImuInitialization();
   }
 
-  if (solver_flag == SolverState::INITIAL) {
-    // monocular + IMU initilization
-    if (options->isMonoWithImu()) {
-      if (frameCount == WINDOW_SIZE) {
-        bool result = false;
-        if (!options->isInitializingExtrinsic() &&
-            (timestamp - initialTimestamp) > 0.1) {
-          result = initialStructure();
-          initialTimestamp = timestamp;
-        }
-        if (result) {
-          optimize();
-          updateLatestStates();
-          solver_flag = SolverState::NON_LINEAR;
-          slideWindow();
-          VINS_INFO << "Initialization complete. Switching to NON_LINEAR mode.";
-        } else {
-          slideWindow();
-        }
-      }
-    }
-
-    // stereo + IMU initilization
-    if (options->isStereoWithImu()) {
-      featureManager.initFramePoseByPnP(frameCount, estimator_state,
-                                        cameraTranslation, cameraRotation);
-      featureManager.triangulate(frameCount, estimator_state, cameraTranslation,
-                                 cameraRotation);
-      if (frameCount == WINDOW_SIZE) {
-        map<double, ImageFrame>::iterator frame_it;
-        int i = 0;
-        for (frame_it = all_image_frame.begin();
-             frame_it != all_image_frame.end(); frame_it++) {
-          frame_it->second.R = estimator_state[i].rotation;
-          frame_it->second.T = estimator_state[i].position;
-          i++;
-        }
-        solveGyroscopeBias(all_image_frame, estimator_state);
-        for (int i = 0; i <= WINDOW_SIZE; i++) {
-          pre_integrations[i]->repropagate(Vector3d::Zero(),
-                                           estimator_state[i].gyro_bias);
-        }
-        optimize();
-        updateLatestStates();
-        solver_flag = SolverState::NON_LINEAR;
-        slideWindow();
-        VINS_INFO << "Initialization complete. Switching to NON_LINEAR mode.";
-      }
-    }
-
-    // stereo only initilization
-    if (options->isStereoWithoutImu()) {
-      featureManager.initFramePoseByPnP(frameCount, estimator_state,
-                                        cameraTranslation, cameraRotation);
-      featureManager.triangulate(frameCount, estimator_state, cameraTranslation,
-                                 cameraRotation);
-      optimize();
-
-      if (frameCount == WINDOW_SIZE) {
-        optimize();
-        updateLatestStates();
-        solver_flag = SolverState::NON_LINEAR;
-        slideWindow();
-        VINS_INFO << "Initialization complete. Switching to NON_LINEAR mode.";
-      }
-    }
-
-    if (frameCount < WINDOW_SIZE) {
-      frameCount++;
-      int prev_frame = frameCount - 1;
-      estimator_state[frameCount] = estimator_state[prev_frame];
-    }
-
-  } else {
-    if (!options->hasImu()) {
-      featureManager.initFramePoseByPnP(frameCount, estimator_state,
-                                        cameraTranslation, cameraRotation);
-    }
-    featureManager.triangulate(frameCount, estimator_state, cameraTranslation,
-                               cameraRotation);
-
-    // optimization
-    TicToc t_solve;
-    optimize();
-    set<int> removeIndex;
-    outliersRejection(removeIndex);
-    featureManager.removeOutlier(removeIndex);
-    if (failureDetection()) {
-      failure_occur = 1;
-      resetState();
-      initializeCamerasFromOptions();
-      return;
-    }
-
-    slideWindow();
-    featureManager.removeFailures();
-    // prepare output of VINS
-    {
-      key_poses.timestamp = timestamp;
-      key_poses.poses.clear();
-      for (int i = 0; i <= WINDOW_SIZE; i++)
-        key_poses.poses.push_back(estimator_state[i].position);
-
-      safe_key_poses.set(key_poses);
-    }
-
-    last_state = estimator_state[WINDOW_SIZE];
-    last_state0 = estimator_state[0];
-    updateLatestStates();
+  if (frameCount < WINDOW_SIZE) {
+    frameCount++;
+    estimator_state[frameCount] = estimator_state[frameCount - 1];
   }
+}
+void Estimator::processNonLinearSolver(Timestamp timestamp) {
+  if (!options->hasImu()) {
+    featureManager.initFramePoseByPnP(frameCount, estimator_state,
+                                      cameraTranslation, cameraRotation);
+  }
+  featureManager.triangulate(frameCount, estimator_state, cameraTranslation,
+                             cameraRotation);
+
+  // optimization
+  TicToc t_solve;
+  optimize();
+  set<int> removeIndex;
+  outliersRejection(removeIndex);
+  featureManager.removeOutlier(removeIndex);
+  if (failureDetection()) {
+    failure_occur = 1;
+    resetState();
+    initializeCamerasFromOptions();
+    return;
+  }
+
+  slideWindow();
+  featureManager.removeFailures();
+  // prepare output of VINS
+  {
+    key_poses.timestamp = timestamp;
+    key_poses.poses.clear();
+    for (int i = 0; i <= WINDOW_SIZE; i++)
+      key_poses.poses.push_back(estimator_state[i].position);
+
+    safe_key_poses.set(key_poses);
+  }
+
+  last_state = estimator_state[WINDOW_SIZE];
+  last_state0 = estimator_state[0];
+  updateLatestStates();
+
   vio_odom.timestamp = timestamp;
   vio_odom.position = estimator_state[WINDOW_SIZE].position;
   vio_odom.orientation = Quaterniond(estimator_state[WINDOW_SIZE].rotation);
   vio_odom.velocity = estimator_state[WINDOW_SIZE].velocity;
-  if (solver_flag == SolverState::NON_LINEAR) {
-    safe_vio_odom.set(vio_odom);
+  safe_vio_odom.set(vio_odom);
+}
+
+void Estimator::processMonoWithImuInitialization(Timestamp timestamp) {
+  if (frameCount != WINDOW_SIZE) return;
+
+  bool result = false;
+  if (!options->isInitializingExtrinsic() &&
+      (timestamp - initialTimestamp) > 0.1) {
+    result = initialStructure();
+    initialTimestamp = timestamp;
   }
+  if (result) {
+    optimize();
+    updateLatestStates();
+    solver_flag = SolverState::NON_LINEAR;
+    slideWindow();
+    VINS_INFO << "Initialization complete. Switching to NON_LINEAR mode.";
+  } else {
+    slideWindow();
+  }
+}
+
+void Estimator::processStereoWithImuInitialization() {
+  featureManager.initFramePoseByPnP(frameCount, estimator_state,
+                                    cameraTranslation, cameraRotation);
+  featureManager.triangulate(frameCount, estimator_state, cameraTranslation,
+                             cameraRotation);
+
+  if (frameCount != WINDOW_SIZE) return;
+
+  map<double, ImageFrame>::iterator frame_it;
+  int i = 0;
+  for (frame_it = all_image_frame.begin(); frame_it != all_image_frame.end();
+       frame_it++) {
+    frame_it->second.R = estimator_state[i].rotation;
+    frame_it->second.T = estimator_state[i].position;
+    i++;
+  }
+  solveGyroscopeBias(all_image_frame, estimator_state);
+  for (int i = 0; i <= WINDOW_SIZE; i++) {
+    pre_integrations[i]->repropagate(Vector3d::Zero(),
+                                     estimator_state[i].gyro_bias);
+  }
+  optimize();
+  updateLatestStates();
+  solver_flag = SolverState::NON_LINEAR;
+  slideWindow();
+  VINS_INFO << "Initialization complete. Switching to NON_LINEAR mode.";
+}
+
+void Estimator::processStereoWithoutImuInitialization() {
+  featureManager.initFramePoseByPnP(frameCount, estimator_state,
+                                    cameraTranslation, cameraRotation);
+  featureManager.triangulate(frameCount, estimator_state, cameraTranslation,
+                             cameraRotation);
+  optimize();
+
+  if (frameCount != WINDOW_SIZE) return;
+
+  optimize();
+  updateLatestStates();
+  solver_flag = SolverState::NON_LINEAR;
+  slideWindow();
+  VINS_INFO << "Initialization complete. Switching to NON_LINEAR mode.";
+}
+
+bool Estimator::isNonLinearSolver() const {
+  return solver_flag == SolverState::NON_LINEAR;
+}
+
+bool Estimator::isNewMarginalization() const {
+  return marginalization_flag == MarginalizationType::MARGIN_SECOND_NEW;
 }
 
 bool Estimator::checkIMUExcitation() {
@@ -982,9 +1012,8 @@ void Estimator::solveOptimization() {
   ceres_options.trust_region_strategy_type = ceres::DOGLEG;
   ceres_options.max_num_iterations = options->max_num_iterations();
   ceres_options.max_solver_time_in_seconds =
-      (marginalization_flag == MarginalizationType::MARGIN_OLD)
-          ? options->max_solver_time() * 0.8
-          : options->max_solver_time();
+      (!isNewMarginalization()) ? options->max_solver_time() * 0.8
+                                : options->max_solver_time();
 
   ceres::Solver::Summary summary;
   ceres::Solve(ceres_options, &problem, &summary);
@@ -1170,79 +1199,71 @@ void Estimator::optimize() {
   prepareParameters();
   solveOptimization();
   updateEstimates();
-
   if (frameCount < WINDOW_SIZE) return;
-  // 根据边缘化标志选择不同的边缘化处理方式
-  if (marginalization_flag == MarginalizationType::MARGIN_OLD) {
-    processOldMarginalization();
-  } else {
+  if (isNewMarginalization()) {
     processNewMarginalization();
+  } else {
+    processOldMarginalization();
   }
 }
 
 void Estimator::slideWindow() {
-  TicToc t_margin;
-  if (marginalization_flag == MarginalizationType::MARGIN_OLD) {
+  if (!isNewMarginalization()) {
     double t_0 = estimator_state[0].timestamp;
     back_state = estimator_state[0];
-
-    if (frameCount == WINDOW_SIZE) {
-      for (int i = 0; i < WINDOW_SIZE; i++) {
-        estimator_state[i].timestamp = estimator_state[i + 1].timestamp;
-        estimator_state[i].swap(estimator_state[i + 1]);
-        if (options->hasImu()) {
-          std::swap(pre_integrations[i], pre_integrations[i + 1]);
-          deltaTimeImuBuffer[i].swap(deltaTimeImuBuffer[i + 1]);
-        }
-      }
-      estimator_state[WINDOW_SIZE] = estimator_state[WINDOW_SIZE - 1];
-      if (options->hasImu()) {
-        pre_integrations[WINDOW_SIZE] = nullptr;
-        pre_integrations[WINDOW_SIZE] = std::make_shared<IntegrationBase>(
-            previousImuData, estimator_state[WINDOW_SIZE].accel_bias,
-            estimator_state[WINDOW_SIZE].gyro_bias, options->imu);
-        deltaTimeImuBuffer[WINDOW_SIZE].clear();
-      }
-
-      if (true || solver_flag == SolverState::INITIAL) {
-        map<double, ImageFrame>::iterator it_0;
-        it_0 = all_image_frame.find(t_0);
-        all_image_frame.erase(all_image_frame.begin(), it_0);
-      }
-      slideWindowOld();
-    }
+    slideWindowOld();
   } else {
-    if (frameCount == WINDOW_SIZE) {
-      estimator_state[frameCount - 1] = estimator_state[frameCount];
-      if (options->hasImu()) {
-        for (unsigned int i = 0; i < deltaTimeImuBuffer[frameCount].size();
-             i++) {
-          const auto &imu = deltaTimeImuBuffer[frameCount][i];
-          pre_integrations[frameCount - 1]->push_back(imu);
-          deltaTimeImuBuffer[frameCount - 1].push_back(imu);
-        }
-        pre_integrations[WINDOW_SIZE] = nullptr;
-        pre_integrations[WINDOW_SIZE] = std::make_shared<IntegrationBase>(
-            previousImuData, estimator_state[WINDOW_SIZE].accel_bias,
-            estimator_state[WINDOW_SIZE].gyro_bias, options->imu);
-
-        deltaTimeImuBuffer[WINDOW_SIZE].clear();
-      }
-      slideWindowNew();
-    }
+    slideWindowNew();
   }
 }
 
 void Estimator::slideWindowNew() {
+  if (frameCount != WINDOW_SIZE) {
+    return;
+  }
+  estimator_state[frameCount - 1] = estimator_state[frameCount];
+  if (options->hasImu()) {
+    for (unsigned int i = 0; i < deltaTimeImuBuffer[frameCount].size(); i++) {
+      const auto &imu = deltaTimeImuBuffer[frameCount][i];
+      pre_integrations[frameCount - 1]->push_back(imu);
+      deltaTimeImuBuffer[frameCount - 1].push_back(imu);
+    }
+    pre_integrations[WINDOW_SIZE] = nullptr;
+    pre_integrations[WINDOW_SIZE] = std::make_shared<IntegrationBase>(
+        previousImuData, estimator_state[WINDOW_SIZE].accel_bias,
+        estimator_state[WINDOW_SIZE].gyro_bias, options->imu);
+
+    deltaTimeImuBuffer[WINDOW_SIZE].clear();
+  }
   frontCount++;
   featureManager.removeFront(frameCount);
 }
 
 void Estimator::slideWindowOld() {
-  backCount++;
+  if (frameCount != WINDOW_SIZE) {
+    return;
+  }
+  for (int i = 0; i < WINDOW_SIZE; i++) {
+    estimator_state[i].timestamp = estimator_state[i + 1].timestamp;
+    estimator_state[i].swap(estimator_state[i + 1]);
+    if (options->hasImu()) {
+      std::swap(pre_integrations[i], pre_integrations[i + 1]);
+      deltaTimeImuBuffer[i].swap(deltaTimeImuBuffer[i + 1]);
+    }
+  }
+  estimator_state[WINDOW_SIZE] = estimator_state[WINDOW_SIZE - 1];
+  if (options->hasImu()) {
+    pre_integrations[WINDOW_SIZE] = nullptr;
+    pre_integrations[WINDOW_SIZE] = std::make_shared<IntegrationBase>(
+        previousImuData, estimator_state[WINDOW_SIZE].accel_bias,
+        estimator_state[WINDOW_SIZE].gyro_bias, options->imu);
+    deltaTimeImuBuffer[WINDOW_SIZE].clear();
+  }
+  auto it_0 = all_image_frame.find(estimator_state[0].timestamp);
+  all_image_frame.erase(all_image_frame.begin(), it_0);
 
-  bool shift_depth = solver_flag == SolverState::NON_LINEAR ? true : false;
-  if (shift_depth) {
+  backCount++;
+  if (isNonLinearSolver()) {
     Matrix3d R0, R1;
     Vector3d P0, P1;
     R0 = back_state.rotation * cameraRotation[0];
@@ -1251,8 +1272,9 @@ void Estimator::slideWindowOld() {
     P1 = estimator_state[0].position +
          estimator_state[0].rotation * cameraTranslation[0];
     featureManager.removeBackShiftDepth(R0, P0, R1, P1);
-  } else
+  } else {
     featureManager.removeBack();
+  }
 }
 
 void Estimator::getPoseInWorldFrame(Eigen::Matrix4d &T) {

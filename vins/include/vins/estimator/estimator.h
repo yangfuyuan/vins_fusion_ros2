@@ -73,10 +73,21 @@ class Estimator {
 
  private:
   void initializeCamerasFromOptions();
-  // 内部处理函数
   void processIMU(const IMUData &data, double deltaTime);
+  void updateStateWithIMU(const IMUData &data, double deltaTime);
   void processImage(const FeatureFrame &features, Timestamp timestamp);
   void fastPredictIMU(const IMUData &data);
+
+  bool isNonLinearSolver() const;
+  bool isNewMarginalization() const;
+  void setMarginalizationFlag(const FeatureFrame &features);
+  void insertImageFrame(const FeatureFrame &features, Timestamp timestamp);
+  void handleExtrinsicInitialization();
+  void processInitialization(Timestamp timestamp);
+  void processNonLinearSolver(Timestamp timestamp);
+  void processMonoWithImuInitialization(Timestamp timestamp);
+  void processStereoWithImuInitialization();
+  void processStereoWithoutImuInitialization();
 
   // internal
   bool initialStructure();
