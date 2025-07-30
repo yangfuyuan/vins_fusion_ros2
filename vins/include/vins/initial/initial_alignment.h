@@ -11,6 +11,7 @@
  *******************************************************/
 
 #pragma once
+#include <vins/common/sensor_data_type.h>
 #include <vins/factor/imu_factor.h>
 #include <vins/utility/utility.h>
 
@@ -36,6 +37,7 @@ class ImageFrame {
   bool is_key_frame;
 };
 void solveGyroscopeBias(map<double, ImageFrame> &all_image_frame,
-                        Vector3d *Bgs);
-bool VisualIMUAlignment(map<double, ImageFrame> &all_image_frame, Vector3d *Bgs,
-                        Vector3d &g, VectorXd &x, const VINSOptions &options);
+                        StateData *states);
+bool VisualIMUAlignment(map<double, ImageFrame> &all_image_frame,
+                        StateData *states, Vector3d &g, VectorXd &x,
+                        const VINSOptions &options);

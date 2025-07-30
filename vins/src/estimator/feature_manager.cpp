@@ -11,7 +11,7 @@
 #include <vins/estimator/feature_manager.h>
 #include <vins/logger/logger.h>
 
-FeatureManager::FeatureManager(Matrix3d _Rs[]) : Rs(_Rs) {
+FeatureManager::FeatureManager() {
   for (int i = 0; i < 2; i++) ric[i].setIdentity();
 }
 
@@ -207,9 +207,8 @@ bool FeatureManager::solvePoseByPnP(Eigen::Matrix3d &R, Eigen::Vector3d &P,
   return true;
 }
 
-void FeatureManager::initFramePoseByPnP(int frameCnt, Vector3d Ps[],
-                                        Matrix3d Rs[], Vector3d tic[],
-                                        Matrix3d ric[]) {
+void FeatureManager::initFramePoseByPnP(int frameCnt, StateData states[],
+                                        Vector3d tic[], Matrix3d ric[]) {
   if (frameCnt > 0) {
     vector<cv::Point2f> pts2D;
     vector<cv::Point3f> pts3D;
@@ -221,7 +220,8 @@ void FeatureManager::initFramePoseByPnP(int frameCnt, Vector3d Ps[],
                                         it_per_id.estimated_depth) +
                               tic[0];
           Vector3d ptsInWorld =
-              Rs[it_per_id.start_frame] * ptsInCam + Ps[it_per_id.start_frame];
+              states[it_per_id.start_frame].rotation * ptsInCam +
+              states[it_per_id.start_frame].position;
 
           cv::Point3f point3d(ptsInWorld.x(), ptsInWorld.y(), ptsInWorld.z());
           cv::Point2f point2d(it_per_id.feature_per_frame[index].point.x(),
@@ -234,20 +234,19 @@ void FeatureManager::initFramePoseByPnP(int frameCnt, Vector3d Ps[],
     Eigen::Matrix3d RCam;
     Eigen::Vector3d PCam;
     // trans to w_T_cam
-    RCam = Rs[frameCnt - 1] * ric[0];
-    PCam = Rs[frameCnt - 1] * tic[0] + Ps[frameCnt - 1];
+    RCam = states[frameCnt - 1].rotation * ric[0];
+    PCam =
+        states[frameCnt - 1].rotation * tic[0] + states[frameCnt - 1].position;
 
     if (solvePoseByPnP(RCam, PCam, pts2D, pts3D)) {
       // trans to w_T_imu
-      Rs[frameCnt] = RCam * ric[0].transpose();
-      Ps[frameCnt] = -RCam * ric[0].transpose() * tic[0] + PCam;
-
-      Eigen::Quaterniond Q(Rs[frameCnt]);
+      states[frameCnt].rotation = RCam * ric[0].transpose();
+      states[frameCnt].position = -RCam * ric[0].transpose() * tic[0] + PCam;
     }
   }
 }
 
-void FeatureManager::triangulate(int frameCnt, Vector3d Ps[], Matrix3d Rs[],
+void FeatureManager::triangulate(int frameCnt, StateData states[],
                                  Vector3d tic[], Matrix3d ric[]) {
   for (auto &it_per_id : feature) {
     if (it_per_id.estimated_depth > 0) continue;
@@ -255,13 +254,15 @@ void FeatureManager::triangulate(int frameCnt, Vector3d Ps[], Matrix3d Rs[],
     if (options->isUsingStereo() && it_per_id.feature_per_frame[0].is_stereo) {
       int imu_i = it_per_id.start_frame;
       Eigen::Matrix<double, 3, 4> leftPose;
-      Eigen::Vector3d t0 = Ps[imu_i] + Rs[imu_i] * tic[0];
-      Eigen::Matrix3d R0 = Rs[imu_i] * ric[0];
+      Eigen::Vector3d t0 =
+          states[imu_i].position + states[imu_i].rotation * tic[0];
+      Eigen::Matrix3d R0 = states[imu_i].rotation * ric[0];
       leftPose.leftCols<3>() = R0.transpose();
       leftPose.rightCols<1>() = -R0.transpose() * t0;
       Eigen::Matrix<double, 3, 4> rightPose;
-      Eigen::Vector3d t1 = Ps[imu_i] + Rs[imu_i] * tic[1];
-      Eigen::Matrix3d R1 = Rs[imu_i] * ric[1];
+      Eigen::Vector3d t1 =
+          states[imu_i].position + states[imu_i].rotation * tic[1];
+      Eigen::Matrix3d R1 = states[imu_i].rotation * ric[1];
       rightPose.leftCols<3>() = R1.transpose();
       rightPose.rightCols<1>() = -R1.transpose() * t1;
 
@@ -282,15 +283,17 @@ void FeatureManager::triangulate(int frameCnt, Vector3d Ps[], Matrix3d Rs[],
     } else if (it_per_id.feature_per_frame.size() > 1) {
       int imu_i = it_per_id.start_frame;
       Eigen::Matrix<double, 3, 4> leftPose;
-      Eigen::Vector3d t0 = Ps[imu_i] + Rs[imu_i] * tic[0];
-      Eigen::Matrix3d R0 = Rs[imu_i] * ric[0];
+      Eigen::Vector3d t0 =
+          states[imu_i].position + states[imu_i].rotation * tic[0];
+      Eigen::Matrix3d R0 = states[imu_i].rotation * ric[0];
       leftPose.leftCols<3>() = R0.transpose();
       leftPose.rightCols<1>() = -R0.transpose() * t0;
 
       imu_i++;
       Eigen::Matrix<double, 3, 4> rightPose;
-      Eigen::Vector3d t1 = Ps[imu_i] + Rs[imu_i] * tic[0];
-      Eigen::Matrix3d R1 = Rs[imu_i] * ric[0];
+      Eigen::Vector3d t1 =
+          states[imu_i].position + states[imu_i].rotation * tic[0];
+      Eigen::Matrix3d R1 = states[imu_i].rotation * ric[0];
       rightPose.leftCols<3>() = R1.transpose();
       rightPose.rightCols<1>() = -R1.transpose() * t1;
 
@@ -317,16 +320,18 @@ void FeatureManager::triangulate(int frameCnt, Vector3d Ps[], Matrix3d Rs[],
     int svd_idx = 0;
 
     Eigen::Matrix<double, 3, 4> P0;
-    Eigen::Vector3d t0 = Ps[imu_i] + Rs[imu_i] * tic[0];
-    Eigen::Matrix3d R0 = Rs[imu_i] * ric[0];
+    Eigen::Vector3d t0 =
+        states[imu_i].position + states[imu_i].rotation * tic[0];
+    Eigen::Matrix3d R0 = states[imu_i].rotation * ric[0];
     P0.leftCols<3>() = Eigen::Matrix3d::Identity();
     P0.rightCols<1>() = Eigen::Vector3d::Zero();
 
     for (auto &it_per_frame : it_per_id.feature_per_frame) {
       imu_j++;
 
-      Eigen::Vector3d t1 = Ps[imu_j] + Rs[imu_j] * tic[0];
-      Eigen::Matrix3d R1 = Rs[imu_j] * ric[0];
+      Eigen::Vector3d t1 =
+          states[imu_j].position + states[imu_j].rotation * tic[0];
+      Eigen::Matrix3d R1 = states[imu_j].rotation * ric[0];
       Eigen::Vector3d t = R0.transpose() * (t1 - t0);
       Eigen::Matrix3d R = R0.transpose() * R1;
       Eigen::Matrix<double, 3, 4> P;

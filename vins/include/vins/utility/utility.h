@@ -147,4 +147,16 @@ class Utility {
       return angle_degrees +
              two_pi * std::floor((-angle_degrees + T(180)) / two_pi);
   }
+
+  template <typename Scalar>
+  static Eigen::Quaternion<Scalar> toQuaternion(Scalar *poses) {
+    Eigen::Quaternion<Scalar> q(poses[6], poses[3], poses[4],
+                                poses[5]);  // w, x, y, z
+    return q.normalized();
+  }
+
+  template <typename Scalar>
+  static Eigen::Matrix<Scalar, 3, 1> toPositionVector(Scalar *poses) {
+    return Eigen::Matrix<Scalar, 3, 1>(poses[0], poses[1], poses[2]);
+  }
 };

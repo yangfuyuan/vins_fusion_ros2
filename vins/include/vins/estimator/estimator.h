@@ -80,6 +80,11 @@ class Estimator {
 
   // internal
   bool initialStructure();
+  bool checkIMUExcitation();
+  std::vector<SFMFeature> buildSFMFeatures();
+  bool solvePoseWithPnP(const std::vector<Quaterniond> &rotations,
+                        const std::vector<Vector3d> &positions,
+                        const std::map<int, Vector3d> &sfmPoints);
   bool visualInitialAlign();
   bool computeRelativePose(Matrix3d &relative_R, Vector3d &relative_T,
                            int &referenceFrame);
@@ -149,19 +154,12 @@ class Estimator {
   SolverState solver_flag;
   MarginalizationType marginalization_flag;
   Vector3d gravity;
-
   Matrix3d cameraRotation[2];
   Vector3d cameraTranslation[2];
-
-  Vector3d positions[(WINDOW_SIZE + 1)];
-  Vector3d velocities[(WINDOW_SIZE + 1)];
-  Matrix3d rotations[(WINDOW_SIZE + 1)];
-  Vector3d accelerometerBiases[(WINDOW_SIZE + 1)];
-  Vector3d gyroscopeBiases[(WINDOW_SIZE + 1)];
-  Timestamp Headers[(WINDOW_SIZE + 1)];
-
-  Matrix3d backRotation, lastRotation, lastRotation0;
-  Vector3d backPosition, lastPosition, lastPosition0;
+  StateData estimator_state[WINDOW_SIZE + 1];
+  StateData back_state, last_state, last_state0;
+  StateData latest_state;
+  Eigen::Quaterniond latest_Q;
 
   IntegrationBase::Ptr pre_integrations[(WINDOW_SIZE + 1)];
   IMUData previousImuData;
@@ -196,8 +194,8 @@ class Estimator {
   SafeClass<OdomData> safe_vio_odom;
   OdomData vio_odom;
 
-  double para_Pose[WINDOW_SIZE + 1][SIZE_POSE];
-  double para_SpeedBias[WINDOW_SIZE + 1][SIZE_SPEEDBIAS];
+  double poseArray[WINDOW_SIZE + 1][SIZE_POSE];
+  double speedBiasArray[WINDOW_SIZE + 1][SIZE_SPEEDBIAS];
   double para_Feature[NUM_OF_F][SIZE_FEATURE];
   double para_Ex_Pose[2][SIZE_POSE];
   double para_Retrive_Pose[SIZE_POSE];
@@ -209,15 +207,6 @@ class Estimator {
 
   map<double, ImageFrame> all_image_frame;
   IntegrationBase::Ptr tmp_pre_integration;
-
-  Eigen::Vector3d initialPosition;
-  Eigen::Matrix3d initialRotation;
-  Eigen::Quaterniond latest_Q;
-  Eigen::Vector3d latestPosition;
-  Eigen::Matrix3d latestRotation;
-  Eigen::Vector3d latestVelocity;
-  Eigen::Vector3d latestAccelBias;
-  Eigen::Vector3d latestGyroBias;
   IMUData latestImuData;
   bool isFirstPoseInitialized = false;
   std::atomic<bool> isRunning{false};

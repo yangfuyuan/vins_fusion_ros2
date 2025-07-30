@@ -11,6 +11,7 @@
 #ifndef FEATURE_MANAGER_H
 #define FEATURE_MANAGER_H
 
+#include <vins/common/sensor_data_type.h>
 #include <vins/estimator/parameters.h>
 #include <vins/utility/tic_toc.h>
 
@@ -74,7 +75,7 @@ class FeaturePerId {
 
 class FeatureManager {
  public:
-  FeatureManager(Matrix3d _Rs[]);
+  FeatureManager();
 
   void setOptions(std::shared_ptr<VINSOptions> options_);
   void clearState();
@@ -89,14 +90,14 @@ class FeatureManager {
   void removeFailures();
   void clearDepth();
   VectorXd getDepthVector();
-  void triangulate(int frameCnt, Vector3d Ps[], Matrix3d Rs[], Vector3d tic[],
+  void triangulate(int frameCnt, StateData states[], Vector3d tic[],
                    Matrix3d ric[]);
   void triangulatePoint(Eigen::Matrix<double, 3, 4> &Pose0,
                         Eigen::Matrix<double, 3, 4> &Pose1,
                         Eigen::Vector2d &point0, Eigen::Vector2d &point1,
                         Eigen::Vector3d &point_3d);
-  void initFramePoseByPnP(int frameCnt, Vector3d Ps[], Matrix3d Rs[],
-                          Vector3d tic[], Matrix3d ric[]);
+  void initFramePoseByPnP(int frameCnt, StateData states[], Vector3d tic[],
+                          Matrix3d ric[]);
   bool solvePoseByPnP(Eigen::Matrix3d &R_initial, Eigen::Vector3d &P_initial,
                       vector<cv::Point2f> &pts2D, vector<cv::Point3f> &pts3D);
   void removeBackShiftDepth(Eigen::Matrix3d marg_R, Eigen::Vector3d marg_P,
@@ -112,7 +113,6 @@ class FeatureManager {
 
  private:
   double compensatedParallax2(const FeaturePerId &it_per_id, int frame_count);
-  const Matrix3d *Rs;
   Matrix3d ric[2];
   std::shared_ptr<VINSOptions> options;
 };
