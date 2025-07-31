@@ -188,7 +188,7 @@ void Estimator::processMeasurements() {
       lock.unlock();
     }
     currentTimestamp = feature.first + options->time_delay;
-    {
+    if (options->hasImu()) {
       std::unique_lock<std::mutex> lock(imu_mutex);
 
       imuCondition.wait(lock, [this] {
