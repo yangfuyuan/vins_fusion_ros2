@@ -26,7 +26,7 @@ T readParam(NodeT node, const std::string& name, T default_value = T()) {
   return value;
 }
 
-double fromMsg(const builtin_interfaces::msg::Time& msg);
+TimeStampSec fromMsg(const builtin_interfaces::msg::Time& msg);
 Eigen::Vector3d fromMsg(const geometry_msgs::msg::Vector3& msg);
 Eigen::Quaterniond fromMsg(const geometry_msgs::msg::Quaternion& msg);
 IMUData fromMsg(const sensor_msgs::msg::Imu& msg);
@@ -35,7 +35,7 @@ cv::Mat fromMsg(const sensor_msgs::msg::Image& img_msg);
 FeatureFrame fromMsg(const sensor_msgs::msg::PointCloud& msg);
 
 nav_msgs::msg::Odometry toMsg(const OdomData& msg);
-builtin_interfaces::msg::Time toMsg(double msg);
+builtin_interfaces::msg::Time toMsg(TimeStampSec msg);
 sensor_msgs::msg::Image toMsg(const cv::Mat& msg);
 sensor_msgs::msg::PointCloud toMsg(const PointCloudData& msg);
 

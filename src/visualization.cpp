@@ -1,8 +1,8 @@
 #include <cv_bridge/cv_bridge.h>
 #include <vins_fusion_ros2/visualization.h>
 
-double fromMsg(const builtin_interfaces::msg::Time &msg) {
-  return static_cast<double>(msg.sec) + static_cast<double>(msg.nanosec) * 1e-9;
+TimeStampSec fromMsg(const builtin_interfaces::msg::Time &msg) {
+  return static_cast<TimeStampSec>(msg.sec + msg.nanosec * 1e-9);
 }
 
 Eigen::Vector3d fromMsg(const geometry_msgs::msg::Vector3 &msg) {
@@ -73,10 +73,10 @@ FeatureFrame fromMsg(const sensor_msgs::msg::PointCloud &msg) {
   return featureFrame;
 }
 
-builtin_interfaces::msg::Time toMsg(double msg) {
+builtin_interfaces::msg::Time toMsg(TimeStampSec sec) {
   builtin_interfaces::msg::Time ros_time;
-  ros_time.sec = static_cast<int32_t>(msg);
-  ros_time.nanosec = static_cast<uint32_t>((msg - ros_time.sec) * 1e9);
+  ros_time.sec = static_cast<int32_t>(sec);
+  ros_time.nanosec = static_cast<uint32_t>((sec - ros_time.sec) * 1e9);
   return ros_time;
 }
 

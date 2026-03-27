@@ -44,8 +44,10 @@ class SafeClass {
   T data_;
 };
 
+typedef double TimeStampSec;
+
 struct SensorDataBase {
-  double timestamp = 0u;
+  TimeStampSec timestamp = 0.0;
 };
 
 struct OdomData : SensorDataBase {
