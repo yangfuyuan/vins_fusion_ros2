@@ -76,16 +76,11 @@ You may also consider putting the above line in your `.bashrc` or `.zshrc`.
 #### 2. Convert the `.bag` file
 
 ```bash
-rosbags-convert foo.bag --dst /path/to/output_folder \
-  --src-typestore ros1_noetic \
-  --dst-typestore ros2_humble
+rosbags-convert --src foo.bag --dst /path/to/output_folder
 ```
 
 - `foo.bag`: your original ROS 1 bag file
 - `/path/to/output_folder`: target folder where converted ROS 2 `.db3` bag will be saved
-- `ros1_noetic` / `ros2_humble`: choose according to your actual ROS versions
-
-You can omit `--src-typestore` and `--dst-typestore` if you want to use the default type inference.
 
 ---
 
@@ -99,20 +94,10 @@ ros2 bag play /path/to/output_folder
 
 ---
 
-### Additional Options
-
-You can also control compression and message filtering:
-
-```bash
-rosbags-convert foo.bag --dst bar \
-  --compress zstd \
-  --compress-mode message \
-  --include-topic /camera/image_raw /imu
-```
-
-See `rosbags-convert --help` for more.
-
----
 
 ## License
 The source code is released under [GPLv3](http://www.gnu.org/licenses/) license.
+
+We are still working on improving the code reliability. For any technical issues, please contact Tong Qin <qintonguavATgmail.com>.
+
+For commercial inquiries, please contact Shaojie Shen <eeshaojieATust.hk>.
