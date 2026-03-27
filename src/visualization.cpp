@@ -89,9 +89,9 @@ nav_msgs::msg::Odometry toMsg(const OdomData &msg) {
   odometry.pose.pose.position.y = msg.position.y();
   odometry.pose.pose.position.z = msg.position.z();
   odometry.pose.pose.orientation.x = msg.orientation.x();
-  odometry.pose.pose.orientation.y = msg.orientation.x();
-  odometry.pose.pose.orientation.z = msg.orientation.x();
-  odometry.pose.pose.orientation.w = msg.orientation.x();
+  odometry.pose.pose.orientation.y = msg.orientation.y();
+  odometry.pose.pose.orientation.z = msg.orientation.z();
+  odometry.pose.pose.orientation.w = msg.orientation.w();
   odometry.twist.twist.linear.x = msg.velocity.x();
   odometry.twist.twist.linear.y = msg.velocity.y();
   odometry.twist.twist.linear.z = msg.velocity.z();
